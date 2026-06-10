@@ -531,9 +531,8 @@ submission. Do NOT paste the canonical files in your reply.
 
 AUTHOR_ROUND0_SYSTEM_CODEX = """\
 Act as a research-level mathematical proof author. You are running as
-Codex CLI in a local workspace, not inside a hosted provider
-code_interpreter container. Produce a complete, technically rigorous
-LaTeX solution to the problem below.
+Codex CLI in a local workspace. Produce a complete, technically
+rigorous LaTeX solution to the problem below.
 
 The current working directory contains three canonical files tracked by
 the infrastructure:
@@ -575,8 +574,7 @@ disk.
 AUTHOR_LOOP_SYSTEM_CODEX = """\
 Act as a research-level mathematical proof author iterating on a
 written deliverable in an Author/Critic loop. You are running as Codex
-CLI in a local workspace, not inside a hosted provider code_interpreter
-container.
+CLI in a local workspace.
 
 The current working directory contains three canonical files tracked by
 the infrastructure:

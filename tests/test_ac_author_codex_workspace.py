@@ -108,6 +108,10 @@ def test_author_codex_workspace_reads_modified_local_files_without_openai() -> N
         out = asyncio.run(author(problem="Prove X.", round=0, n_rounds=1))
 
         events = (Path(tmp) / "events.jsonl").read_text(encoding="utf-8")
+        prompt_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in Path(tmp).rglob("messages.json")
+        )
 
     assert len(captured) == 1
     assert captured[0]["api"] == "codex_cli"
@@ -120,6 +124,8 @@ def test_author_codex_workspace_reads_modified_local_files_without_openai() -> N
     assert out.references_bib.startswith("@misc")
     assert out.files_changed == ["answer.tex", "references.bib", "research_notes.tex"]
     assert '"via": "codex_workspace"' in events
+    assert "code_interpreter" not in prompt_text
+    assert "web_search_preview" not in prompt_text
 
 
 def test_author_codex_workspace_rejects_non_codex_model_config() -> None:
