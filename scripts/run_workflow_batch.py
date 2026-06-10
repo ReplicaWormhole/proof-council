@@ -14,13 +14,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Run a proofstack workflow preset on several problems.")
+    p = argparse.ArgumentParser(description="Run a ProofCouncil workflow preset on several problems.")
     p.add_argument("--workflow", required=True)
     p.add_argument("--problems-file", type=Path, required=True)
     p.add_argument("--output", type=Path, default=Path("outputs"))
     p.add_argument("--run-id", required=True)
     p.add_argument("--run-name", help="Human-readable name shown in the dashboard.")
     p.add_argument("--max-parallel", type=int, default=1)
+    p.add_argument("--monitor", action="store_true", help="Enable live LLM monitor summaries for each problem run.")
+    p.add_argument("--monitor-model", default="models/openai/gpt-54-mini")
     return p
 
 
@@ -37,6 +39,16 @@ def _human_label(value: str) -> str:
     return _slug(value).replace("_", " ").replace("-", " ").title()
 
 
+def _child_run_name(run_name: str | None, workflow: str, problem: dict[str, str]) -> str:
+    base = str(run_name or _human_label(workflow)).strip() or _human_label(workflow)
+    problem_name = str(problem.get("display_name") or _human_label(problem.get("id", ""))).strip()
+    if not problem_name:
+        return base
+    if base == problem_name or base.endswith(f" · {problem_name}"):
+        return base
+    return f"{base} · {problem_name}"
+
+
 def _load_problems(path: Path) -> list[dict[str, str]]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     problems = raw.get("problems") if isinstance(raw, dict) else raw
@@ -47,18 +59,18 @@ def _load_problems(path: Path) -> list[dict[str, str]]:
         if not isinstance(item, dict):
             raise SystemExit(f"problem {idx}: expected an object")
         problem_id = _slug(str(item.get("id") or f"problem_{idx}"))
-        # First Proof's input.json uses ``latex`` for the per-problem
-        # body; legacy mathagents intake also accepts ``text``. Prefer
-        # ``latex`` when present so this script can be run against the
-        # same input.json the official harness sees.
-        raw_text = item.get("latex")
-        if raw_text in (None, ""):
-            raw_text = item.get("text")
-        text = str(raw_text or "").strip()
-        if not text:
-            raise SystemExit(f"problem {problem_id}: empty text/latex")
+        problem_text = str(
+            item.get("latex")
+            or item.get("text")
+            or item.get("problem")
+            or item.get("problem_text")
+            or item.get("statement")
+            or ""
+        ).strip()
+        if not problem_text:
+            raise SystemExit(f"problem {problem_id}: empty problem text")
         display_name = str(item.get("display_name") or item.get("title") or _human_label(problem_id))
-        out.append({"id": problem_id, "text": text, "display_name": display_name})
+        out.append({"id": problem_id, "latex": problem_text, "display_name": display_name})
     return out
 
 
@@ -98,6 +110,7 @@ async def amain() -> int:
         "display_name": args.run_name,
         "started_by": "dashboard",
         "preset": args.workflow,
+        "monitor": {"enabled": bool(args.monitor), "model": args.monitor_model if args.monitor else None},
         "started_at": manifest["started_at"],
         "manifest": manifest,
     }
@@ -128,16 +141,18 @@ async def amain() -> int:
                 "--workflow",
                 args.workflow,
                 "--problem-text",
-                problem["text"],
+                problem["latex"],
                 "--problem-id",
                 problem_id,
                 "--run-id",
                 run_id,
                 "--run-name",
-                f"{args.run_name or _human_label(args.workflow)} · {problem.get('display_name') or _human_label(problem_id)}",
+                _child_run_name(args.run_name, args.workflow, problem),
                 "--output",
                 str(outputs_root),
             ]
+            if args.monitor:
+                cmd.extend(["--monitor", "--monitor-model", args.monitor_model])
             with log_path.open("a", encoding="utf-8") as log:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,

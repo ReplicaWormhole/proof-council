@@ -1,237 +1,189 @@
-# mathagents
+<p align="center">
+  <img src="app/static/favicon.png" alt="ProofCouncil" width="96">
+</p>
 
-ProofStack math-research workflow framework, built on the provider and tool
-layer originally extracted from MathArena.
+<h1 align="center">ProofCouncil</h1>
 
-## Included
+<p align="center">
+  A local app for running, editing, and inspecting math-research agents.
+</p>
 
-- `mathagents.APIClient` for normalized multi-provider model calls
-- Config helpers:
-  - `mathagents.load_yaml_config(...)`
-  - `mathagents.load_solver_config(...)`
-- Workflow agents under `src/proofstack/`
-- Workflow presets under `configs/workflows/`
-- Curated high-end model configs under `configs/models/`
-- Kept tool modules under `src/mathagents/tools/`
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://github.com/astral-sh/uv"><img alt="uv" src="https://img.shields.io/badge/Package%20manager-uv-DE5FE9"></a>
+  <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-green"></a>
+</p>
 
-The old MathArena solver stack has been removed. New agents should be written
-as workflow YAML using `ConfigurablePromptAgent`, `ConfigurableCLIAgent`,
-`DAGWorkflow`, and reusable deterministic helpers.
+ProofCouncil helps you run configurable proof agents, inspect execution traces, review costs, and iterate on workflow presets locally. It was used to create an agent for the Second Batch of First Proof.
 
-## Install
+## Quick Start
 
-We use[ `uv`](https://github.com/astral-sh/uv) for environment and dependency management.
-
-## API Keys And Environment Variables
-
-`APIClient` reads provider credentials from environment variables based on the `api:` field in a model config.
-
-### Provider keys
-
-| `api` value | Environment variable |
-| --- | --- |
-| `openai` | `OPENAI_API_KEY` |
-| `anthropic` | `ANTHROPIC_API_KEY` |
-| `google` | `GOOGLE_API_KEY` |
-| `xai` | `XAI_API_KEY` |
-| `glm` | `GLM_API_KEY` |
-| `deepseek` | `DEEPSEEK_API_KEY` |
-| `deepseek_special` | `DEEPSEEK_API_KEY` |
-| `moonshot` | `MOONSHOT_API_KEY` |
-| `openrouter` | `OPENROUTER_API_KEY` |
-| `together` | `TOGETHER_API_KEY` |
-| `stepfun` | `STEPFUN_API_KEY` |
-| `tiiuae` | `TIIUAE_API_KEY` |
-| `sri` | `SRI_API_KEY` |
-| `custom` | whatever is named by `api_key_env` in the config |
-| `vllm` | no API key |
-
-### Tool-specific environment variables
-
-These are only needed if you use the corresponding kept tools.
-
-| Tool/module | Environment variable | Purpose |
-| --- | --- | --- |
-| `paper_search.py` | `S2_API_KEY` | Semantic Scholar API access |
-
-### Minimal setup example
+Install dependencies with [`uv`](https://github.com/astral-sh/uv):
 
 ```bash
-export OPENAI_API_KEY=...
-export ANTHROPIC_API_KEY=...
-export GOOGLE_API_KEY=...
-export XAI_API_KEY=...
-export DEEPSEEK_API_KEY=...
-export OPENROUTER_API_KEY=...
+uv sync
 ```
 
-You only need to set the variables for the providers you actually use.
-
-## Config Layout
-
-Model configs live under `configs/models/...` and map directly to
-`APIClient` kwargs.
-
-Example refs that currently exist:
-
-- `models/openai/gpt-54`
-- `models/openai/gpt-54-pro`
-- `models/openai/gpt-54-mini`
-- `models/anthropic/opus_47_max`
-- `models/gemini/gemini-31-pro`
-- `models/xai/grok-41-fast-reasoning`
-
-Workflow presets live under `configs/workflows/...`. Read
-`configs/workflows/instructions.md` before creating or editing workflow YAML.
-
-## Running Workflows
+Set the provider keys needed by the agent you plan to run. The app and CLI both read your shell environment and a local `.env` file.
 
 ```bash
-uv run python scripts/run_workflow.py \
-  --workflow configs/workflows/nimble_proof.yaml \
-  --problem "Prove that there are infinitely many primes."
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+GOOGLE_API_KEY=...
 ```
 
-Continue an existing run in place:
+Other supported key names include `XAI_API_KEY`, `GLM_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, `OPENROUTER_API_KEY`, `TOGETHER_API_KEY`, `STEPFUN_API_KEY`, and `TIIUAE_API_KEY`. You only need keys for the models used by your selected workflow.
 
-```bash
-uv run python scripts/run_workflow.py \
-  --workflow configs/workflows/author_critic.yaml \
-  --restart-from 20260523-120000 \
-  --input n_rounds=8
-```
+## Use The App
 
-Add `--restart-copy --run-id <new-run-id>` to continue from a copied run
-directory while leaving the original artifacts untouched.
-
-## First Proof AWS Harness
-
-The First Proof harness should build from the repository root:
-
-```bash
-docker build -t mathagents-firstproof .
-```
-
-The root `Dockerfile` starts `scripts/firstproof_entrypoint.py`
-automatically. At runtime it reads `/data/input/input.json`, writes the
-required aggregate files to `/data/output`, and preserves detailed per-problem
-workflow outputs under `/data/output/workflow_runs/`.
-
-The image sets `PROOFSTACK_SANDBOX_BACKEND=subprocess` because the First Proof
-harness does not mount a Docker socket into the submission container. The
-default First Proof workflow is `author_critic_long`, the AC workflow configured
-for subprocess compute execution inside the already-isolated submission
-container. The adapter also defaults the Compute Worker's Codex sandbox mode to
-`docker-bypass`; Codex's own bubblewrap sandbox cannot create nested namespaces
-inside the First Proof container.
-
-The Compute Worker has the open-source CAS stack on PATH inside the submission
-container:
-
-- `sage` — SageMath.
-- `gap` — GAP standalone.
-- `singular` and `gp` — standalone CAS backends.
-
-The Author and Compute prompts list these explicitly so the agent reaches for
-them rather than fighting with `sympy` on symbolic algebra it can't do.
-
-Required provider secrets are passed through Docker environment variables, for
-example via `docker run --env-file ...`. The current model configs may require:
-
-- `OPENAI_API_KEY`
-- `GOOGLE_API_KEY` for Gemini/Google configs, or `GEMINI_API_KEY` if using a
-  custom config that expects it
-- `ANTHROPIC_API_KEY`
-
-Optional First Proof runtime overrides:
-
-- `FIRSTPROOF_MAX_PARALLEL` (default `6`)
-- `FIRSTPROOF_PAGE_LIMIT` (default `12`)
-- `FIRSTPROOF_BUDGET_USD_PER_QUESTION` (default `1000`)
-- `FIRSTPROOF_N_ROUNDS` (default `10`, initial staged target per problem)
-- `FIRSTPROOF_ROUND_BATCH_SIZE` (default `5`; unsolved problems are resumed
-  in cumulative batches, e.g. 5 rounds then 10 rounds)
-- `FIRSTPROOF_ADAPTIVE_CONTINUATION` (default `true`; after the initial
-  `FIRSTPROOF_N_ROUNDS`, keep resuming unsolved problems in additional
-  `FIRSTPROOF_ROUND_BATCH_SIZE` batches while time and budget remain)
-- `FIRSTPROOF_ADAPTIVE_MAX_ROUNDS` (default `200`; safety cap for adaptive
-  continuation, normally reached only if time and budget do not stop first)
-- `FIRSTPROOF_WORKFLOW` (default `author_critic_long`)
-- `FIRSTPROOF_COMPUTE_CODEX_SANDBOX` (default `docker-bypass`; use
-  `workspace-write` only on hosts where Codex/bubblewrap sandboxing is known to
-  work)
-
-The Author/Critic workflow also surfaces the LaTeX output contract to the
-models: at most 12 pages by default, `\documentclass[12pt]{article}`,
-plain `fullpage` permitted, and no other margin/layout, line-spacing, or
-font-size changes.
-
-The First Proof adapter runs problems in staged round batches by default:
-each problem first gets 5 rounds, its raw workflow answer is preserved under
-`/data/output/staged_solutions/rounds-005/`, and only problems that did not
-reach Author/Critic agreement (`early_stopped` is not `true`) are resumed for
-the next batch. The initial target is `FIRSTPROOF_N_ROUNDS` (default 10), after
-which adaptive continuation keeps giving unsolved problems more cumulative
-batches until Author/Critic agreement, the per-problem budget, the internal
-deadline, or `FIRSTPROOF_ADAPTIVE_MAX_ROUNDS` stops them. For AC workflows,
-non-final batch boundaries stop after Critic review rather than suppressing
-terminal Council/Compute requests. Each compiling batch answer is promoted into
-the top-level `.tex` and aggregate JSON snapshots, and finalization keeps the
-best verified batch answer if a later continuation regresses. Slow first-stage
-runs do not hold a global stage barrier; free worker slots can keep other
-unsolved problems moving through later batches.
-
-Local adapter smoke test without API calls:
-
-```bash
-python scripts/smoke_firstproof_adapter.py
-```
-
-## Output Viewer App
-
-Use the local developer dashboard for workflow runs and presets:
+The app is the main way to use ProofCouncil.
 
 ```bash
 uv run python app/dev.py
 ```
 
-## Using The API Client
+Open <http://127.0.0.1:5002>.
 
-```python
-from mathagents import APIClient, load_solver_config
+From the home screen:
 
-cfg = load_solver_config("models/openai/gpt-54")
-client = APIClient(**cfg)
+- **Run Agent**: choose a workflow preset, add or select problems, provide any missing API keys, and launch one or more runs.
+- **View Runs**: inspect status, cost, wallclock time, execution graphs, messages, files, and final outputs from `outputs/<run-id>/`.
+- **Edit Agent**: edit workflow presets from `configs/workflows/` in the local visual/YAML editor.
+- **Create New Agent**: start a new workflow preset from the app.
+
+The agent editor has many features, including:
+- Visual DAG editor with drag-and-drop nodes, customizable prompts, inputs, outputs, models, and more. The interface is created to work as smoothly as possible, with common actions like copying (Ctrl+C) and pasting (Ctrl+V) nodes, and undo/redo (Ctrl+Z / Ctrl+Y).
+- Agents can directly be used to edit the underlying YAML of an agent, allowing you to instruct your personal agent to edit the workflow you are working on. The DAG editor will automatically update to reflect any changes made to the YAML, and vice versa.
+
+Saved problems live in `problems/`. Run artifacts are written under `outputs/` by default.
+
+## Run From The CLI
+
+Use the CLI when you want a scriptable single-problem run.
+
+```bash
+uv run python scripts/run_workflow.py \
+  --workflow author_critic \
+  --problem problems/example.txt
 ```
 
-## Tools Package
+You can also pass an inline problem:
 
-Reusable tools live under `src/mathagents/tools/` and are wired into
-ProofStack through workflow/tool configuration.
+```bash
+uv run python scripts/run_workflow.py \
+  --workflow author_critic \
+  --problem-text "Prove that there are infinitely many primes." \
+  --problem-id infinitely_many_primes
+```
 
-## Code Execution Setup
+Run output goes to `outputs/<run-id>/`. Start the app afterward and open **View Runs** to inspect the trace.
 
-The `execute_code` / `execute_code_long` tool in [src/mathagents/tools/code_execution.py](src/mathagents/tools/code_execution.py) needs a sandbox backend.
+To continue an existing run:
 
-Preferred setup:
+```bash
+uv run python scripts/run_workflow.py \
+  --workflow author_critic \
+  --restart-from <run-id>
+```
 
-- use Modal for remote sandboxed code execution
-- follow the Modal quickstart: <https://modal.com/docs/guide>
+Workflow presets are in `configs/workflows/`. Pass either a preset name such as `author_critic` or a YAML path such as `configs/workflows/author_critic.yaml`.
 
-Local fallback:
+## Run First Proof
 
-- the tool can also fall back to Docker
-- if you want that path, you need a local image tagged `mathagents-docker`
+ProofCouncil includes a Docker setup for the First Proof harness. The harness expects one JSON file at `/data/input/input.json` and writes all results to `/data/output`.
+
+### Input File
+
+`input.json` can be either a list of problems or an object with a `problems` list. Each problem should include:
+
+- `id`: a stable problem identifier used in output filenames.
+- `latex`: the full problem statement. This can be a complete LaTeX document or just the problem text. This field is required.
+
+Minimal example:
+
+```json
+{
+  "problems": [
+    {
+      "id": "sqrt2",
+      "latex": "Prove that \\sqrt{2} is irrational."
+    },
+    {
+      "id": "infinitely-many-primes",
+      "latex": "\\documentclass{article}\n\\begin{document}\nProve that there are infinitely many primes.\n\\end{document}"
+    }
+  ]
+}
+```
+
+For the included smoke run, this file is already provided at
+`smoke/input.json`.
+
+### Secrets File
+
+`smoke/secrets.env` is a local environment file for API keys. It is not an input problem file and should not be committed. The smoke workflow currently needs:
+
+```bash
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+GOOGLE_API_KEY=...
+```
+
+Start from the template:
+
+```bash
+cp smoke/secrets.env.example smoke/secrets.env
+# Fill in the keys in smoke/secrets.env.
+```
+
+### Smoke Run
+
+The included end-to-end smoke check is:
+
+```bash
+./smoke/run_container.sh
+```
+
+This builds a Docker image, mounts `smoke/input.json` at `/data/input/input.json`, mounts `smoke/output_container/` at `/data/output`, passes `smoke/secrets.env` into the container, and runs `configs/workflows/firstproof_smoke_fast.yaml`.
+
+Use the local non-Docker path when you only want to exercise the adapter:
+
+```bash
+./smoke/run_local.sh
+```
+
+### Harness Image
+
+To build the image that the First Proof-style harness runs:
+
+```bash
+docker build -t proofcouncil-firstproof .
+```
+
+To run it manually with your own input and output directories:
+
+```bash
+docker run --rm \
+  -v "$PWD/smoke/input.json":/data/input/input.json:ro \
+  -v "$PWD/smoke/output_container":/data/output \
+  --env-file smoke/secrets.env \
+  proofcouncil-firstproof
+```
+
+A raw container run uses the default First Proof workflow. For smoke testing, prefer `./smoke/run_container.sh` because it selects the cheap workflow and sets the smoke-sized budget, page limit, and round count.
+
+The default submission run uses `configs/workflows/firstproof_submission.yaml` with adaptive continuation stages up to the submission cap. Override `FIRSTPROOF_WORKFLOW` only when you want a different preset.
 
 Example:
 
 ```bash
-docker build -t mathagents-docker docker/
+docker run --rm \
+  -v "$PWD/smoke/input.json":/data/input/input.json:ro \
+  -v "$PWD/smoke/output_container":/data/output \
+  --env-file smoke/secrets.env \
+  proofcouncil-firstproof
 ```
 
-The current code expects:
+Explicit `FIRSTPROOF_*` environment variables still override defaults.
 
-- Modal app name: `project-euler-mathagents`
-- Docker image name: `mathagents-docker`
-
-If you do not configure either Modal or Docker, code-execution-based agents/tools will fail at runtime.
+First Proof outputs include per-problem `.tex` files, `solutions.json`, `run_summary.json`, `token_usage.jsonl`, and detailed workflow traces under `/data/output/workflow_runs/`.

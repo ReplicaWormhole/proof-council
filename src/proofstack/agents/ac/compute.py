@@ -58,10 +58,6 @@ DEFAULT_SANDBOX_BACKEND = "docker"
 DEFAULT_DOCKER_IMAGE = "proofstack-pwc-sandbox:latest"
 # ``auto`` resolves to ``--dangerously-bypass-approvals-and-sandbox``
 # under docker and ``--sandbox workspace-write`` under subprocess.
-# ``full-auto`` is a historical alias retained for YAML compatibility;
-# codex >= 0.132 dropped the underlying ``--full-auto`` flag, so the
-# mode now maps to ``--sandbox workspace-write`` (equivalent semantics:
-# no approval prompts in ``codex exec`` + workspace-write isolation).
 DEFAULT_CODEX_SANDBOX = "auto"
 
 # Directories to exclude from the workspace zip handed back to the Author.
@@ -263,8 +259,8 @@ class Compute(CLIAgent):
         # Optional docker image override when ``sandbox_backend=docker``.
         docker_image: str = DEFAULT_DOCKER_IMAGE
         # Codex CLI sandbox flag: ``auto`` (default — bypass under
-        # docker, workspace-write under subprocess), ``full-auto``,
-        # ``workspace-write``, ``docker-bypass``, or ``none``.
+        # docker, workspace-write under subprocess), ``workspace-write``,
+        # ``docker-bypass``, or ``none``.
         codex_sandbox: str = DEFAULT_CODEX_SANDBOX
 
     class Outputs(BaseModel):
@@ -501,18 +497,10 @@ def _build_codex_cmd(
         sandbox_flag = ["--dangerously-bypass-approvals-and-sandbox"]
     elif mode in {"workspace-write", "workspace"}:
         sandbox_flag = ["--sandbox", "workspace-write"]
-    elif mode in {"full-auto", "full_auto"}:
-        # codex >= 0.132 removed the ``--full-auto`` flag. Its old
-        # semantics (no approval prompts + workspace-write sandbox)
-        # are equivalent to ``--sandbox workspace-write`` under
-        # ``codex exec``, which is non-interactive by default in the
-        # new CLI. Preserve the YAML-level ``compute_codex_sandbox:
-        # full-auto`` setting by mapping it to the modern flag set.
-        sandbox_flag = ["--sandbox", "workspace-write"]
     elif mode == "none":
         sandbox_flag = []
     else:
-        sandbox_flag = []
+        raise ValueError(f"unsupported codex_sandbox mode: {codex_sandbox!r}")
     return [
         "codex",
         "exec",

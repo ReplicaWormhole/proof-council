@@ -51,10 +51,7 @@ class SandboxSpec:
         "GLM_API_KEY",
         "MOONSHOT_API_KEY",
         "TOGETHER_API_KEY",
-        # Stepfun: README + APIClient use STEPFUN_API_KEY; keep STEP_API_KEY
-        # for compatibility with older configs that may still set it.
         "STEPFUN_API_KEY",
-        "STEP_API_KEY",
     )
 
     # --- Backend selection -------------------------------------------------

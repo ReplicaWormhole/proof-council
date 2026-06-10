@@ -28,7 +28,7 @@ class DAGConfigError(ValueError):
 class DAGWorkflow(Agent):
     """Execute a workflow whose component graph is defined in YAML."""
 
-    description: ClassVar[str] = "Execute a config-defined DAG of proofstack components."
+    description: ClassVar[str] = "Execute a config-defined DAG of ProofCouncil components."
     execution_mode: ClassVar[str] = "workflow"
 
     class Inputs(BaseModel):
@@ -460,7 +460,7 @@ class DAGWorkflow(Agent):
             if not isinstance(updates, dict):
                 raise TypeError(f"{node_id}: loop state_updates must evaluate to a mapping")
             loop_state = {**loop_state, **updates}
-            last_nodes = dict(scope.get("node") or {})
+            last_nodes = _plain_value(dict(scope.get("node") or {}))
             history.append(
                 {
                     "iteration": iteration,
@@ -724,6 +724,18 @@ def _workflow_input_defaults_for_agent(agent: Agent, state: dict[str, Any]) -> d
         return workflow_inputs
     fields = getattr(input_model, "model_fields", {}) or {}
     return {key: workflow_inputs[key] for key in fields if key in workflow_inputs}
+
+
+def _plain_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="python")
+    if isinstance(value, dict):
+        return {key: _plain_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_plain_value(item) for item in value)
+    return value
 
 
 def _workflow_input_dict(raw: Any) -> dict[str, Any]:

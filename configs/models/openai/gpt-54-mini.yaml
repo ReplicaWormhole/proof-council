@@ -10,7 +10,6 @@ top_p: null
 batch_processing: false
 background: true
 use_openai_responses_api: true
-service_tier: "flex"
 # Per-attempt timeout. Without this the OpenAI SDK inherits APIClient's
 # default of 30000s (8h20m) and a hung socket would stall the call for
 # hours. 30 min is plenty for the mini tier; flex tier benefits from

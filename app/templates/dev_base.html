@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="only light">
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link rel="shortcut icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
-    <title>{% block title %}ProofStack{% endblock %}</title>
+    <title>{% block title %}ProofCouncil{% endblock %}</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -114,6 +114,13 @@
         .home-screen {
             width: min(760px, 100%);
             text-align: center;
+        }
+        .home-logo {
+            display: block;
+            width: 82px;
+            height: 82px;
+            margin: 0 auto 18px;
+            object-fit: contain;
         }
         .home-screen h1 {
             margin: 0 0 26px;
@@ -257,9 +264,12 @@
         }
         .run-agent-top {
             display: grid;
-            grid-template-columns: minmax(260px, 0.75fr) minmax(300px, 1fr);
+            grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 14px;
-            align-items: start;
+            align-items: stretch;
+        }
+        .run-agent-top > .run-agent-panel {
+            height: 100%;
         }
         .run-agent-panel h2 {
             margin-top: 0;
@@ -286,6 +296,19 @@
             color: #111827;
             padding: 8px 10px;
             font: inherit;
+        }
+        .run-agent-field span,
+        .sample-runner label span {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #111827;
+        }
+        .run-agent-field input[type="checkbox"],
+        .sample-runner input[type="checkbox"] {
+            width: auto;
+            padding: 0;
+            accent-color: #111827;
         }
         .problem-picker,
         .api-key-list {
@@ -447,6 +470,11 @@
             .home-actions {
                 grid-template-columns: 1fr;
             }
+            .home-logo {
+                width: 68px;
+                height: 68px;
+                margin-bottom: 14px;
+            }
             .home-screen h1 {
                 font-size: 2.3rem;
             }
@@ -562,11 +590,11 @@
             border-radius: 999px;
             padding: 1px 7px;
         }
-        .graph-node.status-ok .graph-status-label { background: #dcfce7; color: #166534; }
-        .graph-node.status-running .graph-status-label { background: #ffedd5; color: #9a3412; }
-        .graph-node.status-pending .graph-status-label { background: #fef9c3; color: #854d0e; }
-        .graph-node.status-skipped .graph-status-label { background: #e5e7eb; color: #374151; }
-        .graph-node.status-error .graph-status-label { background: #fee2e2; color: #991b1b; }
+        .graph-node.status-ok > .graph-node-main .graph-status-label { background: #dcfce7; color: #166534; }
+        .graph-node.status-running > .graph-node-main .graph-status-label { background: #ffedd5; color: #9a3412; }
+        .graph-node.status-pending > .graph-node-main .graph-status-label { background: #fef9c3; color: #854d0e; }
+        .graph-node.status-skipped > .graph-node-main .graph-status-label { background: #e5e7eb; color: #374151; }
+        .graph-node.status-error > .graph-node-main .graph-status-label { background: #fee2e2; color: #991b1b; }
         .graph-reason {
             margin-top: 8px;
             color: #6b7280;
@@ -613,6 +641,10 @@
             background: #f7fee7;
             border-left-color: #65a30d;
         }
+        details.message-assistant {
+            background: #f8fafc;
+            border-left-color: #64748b;
+        }
         details.message-output {
             background: #eff6ff;
             border-left-color: #2563eb;
@@ -623,6 +655,47 @@
         }
         details.message-input summary {
             color: #1e3a8a;
+        }
+        .run-monitor-section,
+        .run-workflow-input-section {
+            margin: 18px 0;
+        }
+        .run-monitor-section > summary,
+        .run-workflow-input-section > summary {
+            cursor: pointer;
+            color: #111827;
+            margin-bottom: 10px;
+        }
+        .run-monitor-section > summary::marker,
+        .run-workflow-input-section > summary::marker {
+            color: #6b7280;
+            font-size: 0.82em;
+        }
+        .run-monitor-heading {
+            font-size: 1.5em;
+            font-weight: 700;
+        }
+        .monitor-list {
+            display: grid;
+            gap: 10px;
+            margin: 10px 0 18px;
+        }
+        .monitor-summary {
+            background: #f8fafc;
+            border-left: 4px solid #7c3aed;
+            border-radius: 6px;
+            padding: 10px 12px;
+        }
+        .monitor-summary-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+        .monitor-summary .rendered-text {
+            background: transparent;
+            border: 0;
+            padding: 0;
         }
         .problem-preview.latex-text {
             color: #334155;
@@ -946,10 +1019,21 @@
             background: transparent;
             padding: 0;
         }
+        .io-panel {
+            color: #111827;
+        }
         .io-panel h2 {
-            margin-top: 0;
+            margin: 0 0 10px;
             border-bottom: 0;
+            color: #111827;
             padding-bottom: 0;
+        }
+        .io-panel h2:not(:first-child) {
+            margin-top: 30px;
+        }
+        .io-panel > .dim {
+            color: #111827;
+            margin-bottom: 14px;
         }
         .editor-toolbar {
             display: flex;
@@ -1089,7 +1173,7 @@
         }
         .sample-runner {
             display: grid;
-            grid-template-columns: minmax(220px, 1.4fr) minmax(140px, 0.6fr) auto minmax(140px, 0.6fr);
+            grid-template-columns: minmax(220px, 1.4fr) minmax(140px, 0.6fr) minmax(120px, 0.45fr) minmax(180px, 0.7fr) auto minmax(140px, 0.6fr);
             gap: 8px;
             align-items: end;
             margin-bottom: 12px;
@@ -1107,7 +1191,8 @@
             font-weight: 600;
         }
         .sample-runner input,
-        .sample-runner textarea {
+        .sample-runner textarea,
+        .sample-runner select {
             border: 1px solid #d1d5db;
             border-radius: 6px;
             background: #fff;
@@ -1844,6 +1929,20 @@
             gap: 12px;
             margin-bottom: 16px;
         }
+        .wiring-rows {
+            display: grid;
+            gap: 8px;
+        }
+        .io-panel .wiring-editor {
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+        .io-panel .wiring-header,
+        .io-panel .wiring-field-display,
+        .io-panel .wiring-row input,
+        .io-panel .wiring-row select {
+            color: #111827;
+        }
         .wiring-row {
             display: grid;
             grid-template-columns: minmax(84px, 0.42fr) minmax(170px, 1fr) auto;
@@ -2261,12 +2360,37 @@
         .prompt-tie-actions {
             display: grid;
             grid-template-columns: minmax(180px, 1fr) auto;
-            gap: 8px;
+            gap: 10px;
             align-items: center;
         }
         .prompt-tie-actions select {
+            appearance: none;
             width: 100%;
             min-width: 0;
+            min-height: 38px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #fff;
+            color: #111827;
+            padding: 8px 34px 8px 10px;
+            font: inherit;
+            line-height: 1.2;
+            background-image:
+                linear-gradient(45deg, transparent 50%, #64748b 50%),
+                linear-gradient(135deg, #64748b 50%, transparent 50%);
+            background-position:
+                calc(100% - 18px) 16px,
+                calc(100% - 13px) 16px;
+            background-size: 5px 5px, 5px 5px;
+            background-repeat: no-repeat;
+        }
+        .prompt-tie-actions select:focus-visible {
+            outline: 2px solid #2563eb;
+            outline-offset: 2px;
+        }
+        .prompt-tie-actions button {
+            min-height: 38px;
+            white-space: nowrap;
         }
         .prompt-tie-actions-single {
             grid-template-columns: auto;
@@ -2522,6 +2646,8 @@
             .current-output-row { grid-template-columns: 1fr; }
             .wiring-row,
             .wiring-row.two-column { grid-template-columns: 1fr; }
+            .prompt-tie-actions { grid-template-columns: 1fr; }
+            .prompt-tie-actions button { width: 100%; }
             .parameter-row,
             .parameter-add { grid-template-columns: 1fr; }
             .sample-runner { grid-template-columns: 1fr; }
@@ -2611,6 +2737,39 @@
             }
             window.setInterval(refreshGraph, 3000);
         }
+        function startRunMonitorPolling(url) {
+            const panel = document.getElementById('run-monitor-panel');
+            if (!panel || !url) return;
+            let inFlight = false;
+            let lastHtml = panel.innerHTML;
+            async function refreshMonitor() {
+                if (inFlight) return;
+                inFlight = true;
+                try {
+                    const response = await fetch(url, {cache: 'no-store'});
+                    if (!response.ok) return;
+                    const html = await response.text();
+                    if (html !== lastHtml) {
+                        lastHtml = html;
+                        panel.innerHTML = html;
+                        renderLatexElements(panel);
+                    }
+                    const live = panel.querySelector('[data-live-status]');
+                    if (live) {
+                        live.textContent = 'Updated ' + new Date().toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        });
+                    }
+                } catch (_) {
+                    const live = panel.querySelector('[data-live-status]');
+                    if (live) live.textContent = 'Live update failed';
+                } finally {
+                    inFlight = false;
+                }
+            }
+            window.setInterval(refreshMonitor, 3000);
+        }
         function confirmAction({title = 'Delete item?', message = 'This cannot be undone.', confirmLabel = 'Delete'} = {}) {
             return new Promise((resolve) => {
                 const overlay = document.getElementById('confirm-overlay');
@@ -2654,7 +2813,7 @@
 <body>
     <header>
         <div>
-            <a href="{{ url_for('index') }}"><strong>ProofStack</strong></a>
+            <a href="{{ url_for('index') }}"><strong>ProofCouncil</strong></a>
         </div>
         <nav class="tabs">
             {% set active = active_tab|default('') %}

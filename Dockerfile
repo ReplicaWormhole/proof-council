@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ``/usr/bin`` on PATH) for symmetry.
 RUN ln -s /usr/bin/Singular /usr/local/bin/singular
 
-# Global fallback for ProofStack CLIAgent's finish handshake. The
+# Global fallback for ProofCouncil CLIAgent's finish handshake. The
 # per-run shim is still installed under the workspace, but Codex may
 # sanitize PATH in a way that bypasses it; /usr/local/bin is in the
 # container's base PATH.
@@ -132,6 +132,6 @@ ENV PYTHONUNBUFFERED=1 \
     MATHAGENTS_CONFIGS_ROOT=/app/configs \
     PROOFSTACK_SANDBOX_BACKEND=subprocess
 
-RUN python -c "from proofstack.registry import load_preset; load_preset('author_critic_long')"
+RUN python -c "from proofstack.registry import load_preset; load_preset('author_critic')"
 
 ENTRYPOINT ["python", "scripts/firstproof_entrypoint.py"]

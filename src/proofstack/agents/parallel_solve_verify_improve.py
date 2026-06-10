@@ -23,9 +23,6 @@ SOLVER_SYSTEM = "You are an expert research mathematician. Return a complete pro
 SOLVER_USER = """Problem:
 {problem}
 
-Literature search:
-{literature_search}
-
 This is branch {branch_index} of {n}. Try a proof strategy that is meaningfully independent from the other branches.
 
 Return the proof inside <solution>...</solution>."""
@@ -36,18 +33,12 @@ Return the verdict inside <verdict>...</verdict>, using exactly correct or incor
 VERIFIER_USER = """Problem:
 {problem}
 
-Literature search:
-{literature_search}
-
 Candidate proof:
 {solution}"""
 
 IMPROVER_SYSTEM = "You improve mathematical proofs according to verifier feedback. Return only the improved proof inside <solution>...</solution>."
 IMPROVER_USER = """Problem:
 {problem}
-
-Literature search:
-{literature_search}
 
 Current proof:
 {solution}
@@ -60,9 +51,6 @@ Return the improved proof inside <solution>...</solution>."""
 MERGER_SYSTEM = "You merge candidate mathematical proofs into one rigorous standalone proof. Return only the final proof inside <solution>...</solution>."
 MERGER_USER = """Problem:
 {problem}
-
-Literature search:
-{literature_search}
 
 Candidate proofs:
 {candidate_proofs}
@@ -87,7 +75,6 @@ class ParallelSolveVerifyImprove(Agent):
         model_config = ConfigDict(extra="ignore")
 
         problem: str = ""
-        literature_search: str = ""
 
     class Outputs(BaseModel):
         solution: str = ""
@@ -158,7 +145,6 @@ class ParallelSolveVerifyImprove(Agent):
                     n=branch_count,
                     m=pass_count,
                     problem=inp.problem,
-                    literature_search=inp.literature_search,
                     agents=agents,
                 )
                 for i in range(branch_count)
@@ -172,7 +158,6 @@ class ParallelSolveVerifyImprove(Agent):
             return self.Outputs(solution=solutions[0])
         merged = await agents["merger"](
             problem=inp.problem,
-            literature_search=inp.literature_search,
             candidate_proofs=_candidate_proofs_text(solutions),
         )
         return self.Outputs(solution=str(getattr(merged, "solution", "") or ""))
@@ -184,12 +169,10 @@ class ParallelSolveVerifyImprove(Agent):
         n: int,
         m: int,
         problem: str,
-        literature_search: str,
         agents: dict[str, ConfigurablePromptAgent],
     ) -> dict[str, Any]:
         draft = await agents["solver"](
             problem=problem,
-            literature_search=literature_search,
             branch_index=index,
             n=n,
         )
@@ -199,7 +182,6 @@ class ParallelSolveVerifyImprove(Agent):
         for iteration in range(m):
             checked = await agents["verifier"](
                 problem=problem,
-                literature_search=literature_search,
                 solution=solution,
                 branch_index=index,
                 iteration=iteration + 1,
@@ -218,7 +200,6 @@ class ParallelSolveVerifyImprove(Agent):
                 break
             improved = await agents["improver"](
                 problem=problem,
-                literature_search=literature_search,
                 solution=solution,
                 verification=verification,
                 branch_index=index,
@@ -292,7 +273,6 @@ class ParallelSolveVerifyImprove(Agent):
 def _role_input_schema(role: str) -> dict[str, str]:
     common = {
         "problem": "string",
-        "literature_search": "string",
         "branch_index": "integer",
         "n": "integer",
     }
@@ -301,7 +281,6 @@ def _role_input_schema(role: str) -> dict[str, str]:
     if role == "merger":
         return {
             "problem": "string",
-            "literature_search": "string",
             "candidate_proofs": "string",
         }
     return {

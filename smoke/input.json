@@ -1,5 +1,5 @@
 {
-  "_note": "Fake First-Proof-style problem list for the firstproof_smoke_fast / firstproof_smoke_full workflows. Each entry is a syntactically valid input.json item; the LaTeX bodies are designed to exercise different code paths in scripts/firstproof_entrypoint.py and the Author/Critic loop. See smoke/README.md for which path each problem targets.",
+  "_note": "Fake First-Proof-style problem list for the firstproof_smoke_fast workflow. Each entry is a syntactically valid input.json item; the LaTeX bodies are designed to exercise different code paths in scripts/firstproof_entrypoint.py and the Author/Critic loop. See smoke/README.md for which path each problem targets.",
   "problems": [
     {
       "id": "smoke-001-trivial-arithmetic",

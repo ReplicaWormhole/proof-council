@@ -1,6 +1,6 @@
 {% extends "dev_base.html" %}
 {% set active_tab = 'edit' %}
-{% block title %}Edit {{ preset.label }} — ProofStack{% endblock %}
+{% block title %}Edit {{ preset.label }} — ProofCouncil{% endblock %}
 {% block content %}
     <div class="workflow-editor-page">
     <div class="workflow-editor-titlebar">
@@ -98,6 +98,20 @@
                     Problem id
                     <input id="sample-problem-id" value="editor_sample">
                 </label>
+                <label>
+                    <span>
+                        <input id="sample-monitor-enabled" type="checkbox">
+                        Monitor run
+                    </span>
+                </label>
+                <label>
+                    Monitor model
+                    <select id="sample-monitor-model">
+                        {% for model in monitor_model_options %}
+                            <option value="{{ model }}" {% if model == 'openai/gpt-54-mini' %}selected{% endif %}>{{ model }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
                 <button type="button" onclick="startSampleRun()">Run Sample</button>
                 <span id="sample-run-status" class="dim"></span>
             </div>
@@ -149,6 +163,7 @@
         let repeatZoneCreateOpen = false;
         let addNodePaletteOpen = false;
         let openInspectorNodeIds = [];
+        const inspectorSectionOpenStates = new Map();
         let validateTimer = null;
         const promptAutosaveTimers = new Map();
         const parameterAutosaveTimers = new Map();
@@ -232,27 +247,6 @@
                 keywords: 'codex claude shell cli workspace files sandbox'
             },
             {
-                template: 'solver',
-                label: 'Proof Writer',
-                group: 'Proof Work',
-                description: 'Writes a candidate proof from a problem and optional strategy.',
-                keywords: 'solver proof draft solution'
-            },
-            {
-                template: 'validator',
-                label: 'Checker',
-                group: 'Proof Work',
-                description: 'Checks a proof and returns findings such as ok, gap, or wrong.',
-                keywords: 'validator referee verify feedback findings'
-            },
-            {
-                template: 'improver',
-                label: 'Fixer',
-                group: 'Proof Work',
-                description: 'Rewrites a proof using checker feedback.',
-                keywords: 'improver fixer repair feedback revise'
-            },
-            {
                 template: 'if_else',
                 label: 'If / Else',
                 group: 'Control',
@@ -265,20 +259,6 @@
                 group: 'Control',
                 description: 'Creates a repeated subgraph between chosen start and end nodes.',
                 keywords: 'loop repeat iteration feedback while'
-            },
-            {
-                template: 'map_chain',
-                label: 'Parallel Proof Attempts',
-                group: 'Proof Work',
-                description: 'Runs solver, checker, and fixer branches over several approaches.',
-                keywords: 'parallel branches map approaches'
-            },
-            {
-                template: 'join',
-                label: 'Merge Proofs',
-                group: 'Proof Work',
-                description: 'Combines multiple candidate proofs into one result.',
-                keywords: 'merge join combine'
             },
             {
                 template: 'latex',
@@ -570,11 +550,17 @@
             layer.innerHTML = '';
             zoneLayer.innerHTML = '';
             if (!nodes.length) {
-                layer.innerHTML = `
+                const customWorkflow = (currentReport.warnings || []).some((warning) => String(warning).includes('custom workflow'));
+                layer.innerHTML = customWorkflow ? `
+                    <div class="graph-empty-state">
+                        <h2>Custom workflow</h2>
+                        <p>This preset runs from the app, but it is implemented as a Python workflow instead of a visual DAG.</p>
+                    </div>
+                ` : `
                     <div class="graph-empty-state">
                         <h2>No DAG nodes</h2>
                         <p>This preset does not define a YAML <code>dag:</code>, so it cannot be edited as a visual workflow.</p>
-                        <p><a href="/preset/jaunty_proof/editor">Open jaunty_proof</a> or <a href="/preset/nimble_proof/editor">open nimble_proof</a>.</p>
+                        <p><a href="/preset/author_critic/editor">Open author_critic</a> or <a href="/preset/firstproof_smoke_fast/editor">open firstproof_smoke_fast</a>.</p>
                     </div>
                 `;
             }
@@ -675,7 +661,9 @@
                     out.push(node);
                 }
             });
-            out.push(workflowOutputNode());
+            if (out.length || Object.keys(currentReport.workflow_outputs || {}).length) {
+                out.push(workflowOutputNode());
+            }
             return out;
         }
 
@@ -722,8 +710,8 @@
                     },
                     input_fields: inputs,
                     output_fields: outputs,
-                    inputs_schema: {},
-                    outputs_schema: Object.fromEntries(outputs.map((field) => [field, {type: 'string'}])),
+                    inputs_schema: bodyNode.inputs_schema || {},
+                    outputs_schema: bodyNode.outputs_schema || Object.fromEntries(outputs.map((field) => [field, {type: 'string'}])),
                     config: bodyNode,
                     visual: {type: 'loop_body', loopId: loopNode.id, bodyNodeId: bodyNode.id},
                 };
@@ -2732,14 +2720,18 @@
                 promptBehaviorSection(node),
             ].filter(Boolean).join('');
             const lowLevel = hidesLowLevel ? '' : nodeLowLevelSection(node);
-            const inputs = inspectorSection('Inputs', nodeInputSection(node), {open: primary === 'inputs'});
+            const inputs = inspectorSection('Inputs', nodeInputSection(node), {
+                open: primary === 'inputs',
+                nodeId: node.id,
+                section: 'inputs',
+            });
             const deleteAction = isVisualBodyNode
                 ? ''
                 : `<button type="button" class="node-inspector-delete danger" aria-label="Delete ${escapeAttr(displayLabel(node))}" onclick="deleteGraphNode('${escapeAttr(node.id)}')">Delete</button>`;
             return `
                 <section class="node-inspector simple-inspector node-inspector-window" data-inspector-node-id="${escapeAttr(node.id)}">
                 <div class="node-inspector-heading">
-                    ${isVisualBodyNode ? `<h2>${escapeHtml(displayLabel(node))}</h2>` : editableNodeTitle(node, textPrefix)}
+                    ${editableNodeTitle(node, textPrefix)}
                     <div class="node-inspector-heading-actions">
                         ${deleteAction}
                         <button type="button" class="node-inspector-close" aria-label="Close ${escapeAttr(displayLabel(node))}" onclick="closeNodeInspector('${escapeAttr(node.id)}')">Close</button>
@@ -2747,12 +2739,24 @@
                 </div>
                 <div class="node-inspector-body">
                 <div class="node-inspector-summary">
-                    ${isVisualBodyNode ? `<p class="dim">${escapeHtml(nodePurpose(node))}</p>` : editableNodeSubtitle(node, textPrefix)}
+                    ${editableNodeSubtitle(node, textPrefix)}
                 </div>
                 ${inputs}
-                ${inspectorSection('Prompt / Behavior', behavior, {open: primary === 'prompt'})}
-                ${inspectorSection('Outputs', nodeOutputSection(node), {open: primary === 'outputs'})}
-                ${lowLevel ? inspectorSection('Run condition', lowLevel, {open: false}) : ''}
+                ${inspectorSection('Prompt / Behavior', behavior, {
+                    open: primary === 'prompt',
+                    nodeId: node.id,
+                    section: 'prompt',
+                })}
+                ${inspectorSection('Outputs', nodeOutputSection(node), {
+                    open: primary === 'outputs',
+                    nodeId: node.id,
+                    section: 'outputs',
+                })}
+                ${lowLevel ? inspectorSection('Run condition', lowLevel, {
+                    open: false,
+                    nodeId: node.id,
+                    section: 'run_condition',
+                }) : ''}
                 </div>
                 </section>
             `;
@@ -2915,12 +2919,24 @@
 
         function inspectorSection(title, body, options = {}) {
             if (!String(body || '').trim()) return '';
+            const key = options.nodeId && options.section ? `${options.nodeId}:${options.section}` : '';
+            const isOpen = key && inspectorSectionOpenStates.has(key)
+                ? inspectorSectionOpenStates.get(key)
+                : Boolean(options.open);
+            const stateAttrs = key
+                ? ` data-inspector-section-key="${escapeAttr(key)}" ontoggle="handleInspectorSectionToggle(this)"`
+                : '';
             return `
-                <details class="inspector-section" ${options.open ? 'open' : ''}>
+                <details class="inspector-section"${stateAttrs} ${isOpen ? 'open' : ''}>
                     <summary>${escapeHtml(title)}</summary>
                     <div class="inspector-section-body">${body}</div>
                 </details>
             `;
+        }
+
+        function handleInspectorSectionToggle(details) {
+            const key = details?.dataset?.inspectorSectionKey || '';
+            if (key) inspectorSectionOpenStates.set(key, Boolean(details.open));
         }
 
         function declaredInputFieldsForNode(node) {
@@ -3079,17 +3095,26 @@
             const conditionBody = condition && typeof condition === 'object' && condition.python !== undefined
                 ? condition.python
                 : editorValue(condition);
+            const rawMaxIterations = Object.prototype.hasOwnProperty.call(cfg, 'max_iterations') ? cfg.max_iterations : 3;
+            const maxIterationsValue = editorValue(rawMaxIterations);
+            const maxIterationsAttrs = repeatMaxIterationsInputAttrs(maxIterationsValue);
             return `
                 <h3>${fieldLabel('Repeat settings', 'Runs the internal workflow until the condition stops or the iteration cap is reached.')}</h3>
                 <div class="inspector-grid">
                     <label>Max iterations
-                        <input id="${escapeAttr(prefix)}-max-iterations" type="number" min="1" value="${escapeAttr(editorValue(cfg.max_iterations || 3))}" oninput="scheduleLoopSettingsAutosave('${escapeAttr(node.id)}', '${escapeAttr(prefix)}')">
+                        <input id="${escapeAttr(prefix)}-max-iterations" ${maxIterationsAttrs} value="${escapeAttr(maxIterationsValue)}" oninput="scheduleLoopSettingsAutosave('${escapeAttr(node.id)}', '${escapeAttr(prefix)}')">
                     </label>
                     <label>${fieldLabel('Continue while', fieldHelp.repeatCondition)}
                         <textarea id="${escapeAttr(prefix)}-condition" rows="3" oninput="scheduleLoopSettingsAutosave('${escapeAttr(node.id)}', '${escapeAttr(prefix)}')">${escapeHtml(conditionBody)}</textarea>
                     </label>
                 </div>
             `;
+        }
+
+        function repeatMaxIterationsInputAttrs(value) {
+            return /^\d+$/.test(String(value || '').trim())
+                ? 'type="number" min="1"'
+                : 'type="text" spellcheck="false"';
         }
 
         function repeatStateEditor(node) {
@@ -3895,9 +3920,14 @@
             const currentInputs = Object.fromEntries(
                 Object.entries(currentReport.workflow_inputs || {}).filter(([name]) => !budgetNames.has(name))
             );
-            const inputs = {...Object.fromEntries(workflowInputNames().map((name) => [name, ''])), ...currentInputs};
+            const workflowNames = workflowInputNames();
+            const inputs = {...Object.fromEntries(workflowNames.map((name) => [name, ''])), ...currentInputs};
             return mappingEditor(prefix, inputs, {
                 sourcePicker: false,
+                displayFields: true,
+                allowAdd: true,
+                allowRemove: true,
+                lockedFields: workflowNames,
                 addLabel: 'Add workflow input',
                 autosave: () => scheduleWorkflowInputsAutosave(prefix),
             });
@@ -3911,7 +3941,9 @@
             };
             return mappingEditor(prefix, budget, {
                 sourcePicker: false,
+                displayFields: true,
                 allowAdd: false,
+                allowRemove: false,
                 lockedFields: ['max_usd', 'max_wallclock_s'],
                 autosave: () => scheduleWorkflowBudgetAutosave(prefix),
             });
@@ -4133,6 +4165,8 @@
             const applyLabel = options.applyLabel || 'Apply';
             const applyCall = options.applyCall || '';
             const allowAdd = options.allowAdd !== false;
+            const allowRemove = options.allowRemove !== false;
+            const displayFields = Boolean(options.displayFields);
             const lockedFields = new Set(options.lockedFields || []);
             const autosave = typeof options.autosave === 'function' ? options.autosave : null;
             const context = options.context || {};
@@ -4149,8 +4183,8 @@
             return `
                 <div class="wiring-editor" id="${escapeAttr(prefix)}"${editorAttrs}>
                     ${wiringHeader(sourcePicker, context)}
-                    <div id="${escapeAttr(prefix)}-rows">
-                        ${entries.map(([field, value]) => wiringRow(prefix, field, value, sourcePicker, {lockedField: lockedFields.has(field)})).join('')}
+                    <div class="wiring-rows" id="${escapeAttr(prefix)}-rows">
+                        ${entries.map(([field, value]) => wiringRow(prefix, field, value, sourcePicker, {lockedField: lockedFields.has(field), displayField: displayFields, allowRemove})).join('')}
                     </div>
                     ${actions ? `<div class="inspector-actions">${actions}</div>` : ''}
                 </div>
@@ -4171,10 +4205,11 @@
         function wiringRow(prefix, field = '', value = '', sourcePicker = true, rowOptions = {}) {
             const context = wiringContexts.get(prefix) || {};
             const friendlyField = friendlyWiringField(field, context);
-            const useFriendlyField = rowOptions.lockedField || Boolean(friendlyField);
+            const displayField = Boolean(rowOptions.displayField);
+            const useFriendlyField = displayField || rowOptions.lockedField || Boolean(friendlyField);
             const readonlyField = rowOptions.lockedField ? 'readonly aria-readonly="true"' : '';
             const skipEmpty = rowOptions.skipEmptyValue ? ' data-skip-empty-value="true"' : '';
-            const removeButton = rowOptions.lockedField ? '' : '<button type="button" onclick="removeWiringRow(this)">Remove</button>';
+            const removeButton = rowOptions.lockedField || rowOptions.allowRemove === false ? '' : '<button type="button" onclick="removeWiringRow(this)">Remove</button>';
             const fieldControl = useFriendlyField
                 ? `
                     <div class="wiring-field-display">
@@ -6284,7 +6319,7 @@
             currentAgentLabel = String(label || currentPresetName);
             const element = document.getElementById('agent-name-current');
             if (element && !isInlineEditing(element)) element.textContent = currentAgentLabel;
-            document.title = `Edit ${currentAgentLabel} — ProofStack`;
+            document.title = `Edit ${currentAgentLabel} — ProofCouncil`;
         }
 
         async function updateAgentLabel(requestedName = '') {
@@ -6344,6 +6379,8 @@
                 body: JSON.stringify({
                     problem: document.getElementById('sample-problem').value,
                     problem_id: document.getElementById('sample-problem-id').value,
+                    monitor: document.getElementById('sample-monitor-enabled')?.checked || false,
+                    monitor_model: document.getElementById('sample-monitor-model')?.value || 'openai/gpt-54-mini',
                 })
             });
             const payload = await response.json();

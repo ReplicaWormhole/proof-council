@@ -55,7 +55,7 @@ class ParallelSolveVerifyImproveTests(unittest.TestCase):
                 "proofstack.agents.parallel_solve_verify_improve.ConfigurablePromptAgent",
                 _FakePromptAgent,
             ):
-                out = asyncio.run(agent(problem="P", literature_search="L", n=99, m=99))
+                out = asyncio.run(agent(problem="P", n=99, m=99))
 
             self.assertIn("draft-1-improved", out.solution)
             self.assertIn("draft-2-improved", out.solution)
@@ -63,6 +63,7 @@ class ParallelSolveVerifyImproveTests(unittest.TestCase):
             improver_calls = [call for call in _FakePromptAgent.calls if call[0].endswith(".improver")]
             self.assertEqual(len(verifier_calls), 4)
             self.assertEqual(len(improver_calls), 2)
+            self.assertFalse(any("literature_search" in kwargs for _, kwargs in _FakePromptAgent.calls))
 
             branch_logs = list((Path(temp_dir) / "agents").glob("parallel-*/branches.json"))
             self.assertEqual(len(branch_logs), 1)
@@ -113,7 +114,7 @@ class ParallelSolveVerifyImproveTests(unittest.TestCase):
 
         self.assertTrue(report["ok"], report.get("errors"))
         self.assertEqual(nodes["parallel"]["output_fields"], ["solution"])
-        self.assertEqual(nodes["parallel"]["input_fields"], ["literature_search"])
+        self.assertEqual(nodes["parallel"]["input_fields"], [])
         self.assertEqual(nodes["parallel"]["component_config"]["n"], 4)
         self.assertEqual(nodes["parallel"]["component_config"]["m"], 2)
         self.assertIn("__editor__", nodes["parallel"]["component_config"])

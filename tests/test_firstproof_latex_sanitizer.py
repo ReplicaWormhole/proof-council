@@ -248,7 +248,7 @@ class FinalSubmissionCompileTests(unittest.TestCase):
         return ep.Settings(
             input_path=output_dir / "input.json",
             output_dir=output_dir,
-            workflow="author_critic_long",
+            workflow="author_critic",
             max_parallel=1,
             page_limit=12,
             budget_usd_per_question=1.0,
@@ -365,7 +365,7 @@ class RoundBatchTests(unittest.TestCase):
         return ep.Settings(
             input_path=output_dir / "input.json",
             output_dir=output_dir,
-            workflow="author_critic_long",
+            workflow="author_critic",
             max_parallel=1,
             page_limit=12,
             budget_usd_per_question=1.0,
@@ -416,7 +416,7 @@ class RoundBatchTests(unittest.TestCase):
                 run_namespace="trial-20260524",
             )
             problems = ep._parse_problems(
-                [{"id": "prob-001", "text": "Problem"}],
+                [{"id": "prob-001", "latex": "Problem"}],
                 settings,
             )
 
@@ -1290,13 +1290,13 @@ class FailOpenFinalizationTests(unittest.TestCase):
         return ep.Settings(
             input_path=output_dir / "input.json",
             output_dir=output_dir,
-            workflow="author_critic_long",
+            workflow="author_critic",
             max_parallel=1,
             page_limit=50,
             budget_usd_per_question=1.0,
             n_rounds=1,
             round_batch_size=1,
-            compute_codex_sandbox="subprocess",
+            compute_codex_sandbox="docker-bypass",
             runner_script="scripts/run_workflow.py",
             warnings=[],
             deadline_seconds=None,

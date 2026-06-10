@@ -1,7 +1,7 @@
 {% extends "dev_base.html" %}
 {% import "dev_macros.html" as ui %}
 {% set active_tab = 'runs' %}
-{% block title %}{{ run.display_name }} — ProofStack{% endblock %}
+{% block title %}{{ run.display_name }} — ProofCouncil{% endblock %}
 
 {% block content %}
     <h1>{{ run.display_name }}</h1>
@@ -24,8 +24,12 @@
                         <td>{{ problem.display_name or problem.title or problem.problem_id or problem_id }}</td>
                         <td><span class="pill" data-problem-status="{{ problem.status or 'queued' }}">{{ problem.status or 'queued' }}</span></td>
                         <td>
-                            {% if problem.run_id %}
+                            {% if problem.run_id and problem.has_run %}
                                 <a class="agent-link" href="{{ url_for('run_detail', run_id=problem.run_id) }}">Open</a>
+                            {% elif problem.status == 'error' and problem.error %}
+                                <span class="dim">{{ problem.error }}</span>
+                            {% elif problem.run_id %}
+                                <span class="dim">Waiting for run...</span>
                             {% else %}—{% endif %}
                         </td>
                         <td><span class="dim">{{ problem.started_at | display_time }}</span></td>
@@ -40,7 +44,7 @@
         </script>
     {% endif %}
 
-    {% if run.has_events %}
+    {% if show_execution_graph %}
         <h2>Execution graph</h2>
         <div id="execution-graph-panel">
             {% include "dev_run_graph.html" %}
@@ -51,8 +55,22 @@
     {% endif %}
 
     {% if workflow_input is not none %}
-        <h2>Workflow input</h2>
-        {{ ui.render_input(workflow_input, 'No workflow input captured.') }}
+        <details class="run-workflow-input-section" open>
+            <summary><span class="run-monitor-heading">Workflow input</span></summary>
+            {{ ui.render_input(workflow_input, 'No workflow input captured.') }}
+        </details>
+    {% endif %}
+
+    {% if show_monitor %}
+        <details class="run-monitor-section" open>
+            <summary><span class="run-monitor-heading">Monitor summaries</span></summary>
+            <div id="run-monitor-panel">
+                {% include "dev_run_monitor.html" %}
+            </div>
+        </details>
+        <script>
+            startRunMonitorPolling("{{ url_for('run_monitor_fragment', run_id=run.run_id) }}");
+        </script>
     {% endif %}
 
     {% if workflow_output is not none %}

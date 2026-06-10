@@ -88,6 +88,7 @@ class RunContext:
     model_overrides: dict[str, ModelSpec] = field(default_factory=dict)
     component_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
     config_snapshot: dict[str, Any] = field(default_factory=dict)
+    monitor: Any | None = None
     _agent_call_counts: dict[str, int] = field(default_factory=dict)
 
     @classmethod

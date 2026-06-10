@@ -19,10 +19,12 @@ from proofstack.agents.ac.ac_workflow import (  # noqa: E402
     _CompileResult,
     _problem_hash,
 )
+from proofstack.agents.ac.visual_blocks import ACInitBlock, ACReturnBlock  # noqa: E402
 from proofstack.agents.ac.author import Author  # noqa: E402
 from proofstack.agents.ac.council import CouncilReply  # noqa: E402
 from proofstack.agents.ac.critic import ACCritic  # noqa: E402
 from proofstack.context import RunContext  # noqa: E402
+from proofstack.registry import load_preset  # noqa: E402
 from scripts import run_workflow  # noqa: E402
 
 
@@ -36,6 +38,143 @@ def _workspace(root: Path, problem_id: str = "p", problem: str = "P") -> Path:
 
 
 class ACResumeTests(unittest.TestCase):
+    def test_visual_author_critic_preset_runs_real_loop_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            preset = load_preset("author_critic")
+            ctx = RunContext.create(
+                run_id="run",
+                root_workdir=root,
+                flat=True,
+                component_configs=preset.component_configs,
+            )
+            _disable_event_writes(ctx)
+            workflow = preset.workflow_cls(ctx)
+            calls: list[tuple] = []
+
+            async def fake_author_run(self, inp):
+                calls.append(("author", inp.round))
+                return self.Outputs(
+                    answer_tex=r"\documentclass{article}\begin{document}answer\end{document}",
+                    research_notes_tex="notes",
+                    references_bib="",
+                    ready=inp.round >= 1,
+                    thinking_summary=f"thinking r{inp.round}",
+                )
+
+            async def fake_critic_run(self, inp):
+                calls.append(("critic", inp.round, inp.mode, inp.omit_author_thinking))
+                return self.Outputs(
+                    review_md=f"review r{inp.round} {inp.mode}",
+                    answer_ready=inp.round >= 1,
+                    mode=inp.mode,
+                    messages_after=[
+                        {"role": "user", "content": f"u {inp.round} {inp.mode}"},
+                        {"role": "assistant", "content": f"a {inp.round} {inp.mode}"},
+                    ],
+                )
+
+            async def deterministic_ready(self, workspace, *, page_limit):
+                return True, []
+
+            def fake_compile(tex, *, bib_path=None, page_limit=12, is_full_document=True):
+                return _CompileResult(
+                    tex=tex,
+                    tex_path=None,
+                    pdf_path=None,
+                    compiled=True,
+                    pages=1,
+                )
+
+            with patch.object(Author, "run", fake_author_run), patch.object(
+                ACCritic, "run", fake_critic_run
+            ), patch.object(
+                ACWorkflow, "_deterministic_ready", deterministic_ready
+            ), patch(
+                "proofstack.agents.ac.ac_workflow._simple_compile_latex",
+                side_effect=fake_compile,
+            ), patch(
+                "proofstack.agents.ac.visual_blocks._simple_compile_latex",
+                side_effect=fake_compile,
+            ):
+                out = asyncio.run(
+                    workflow(
+                        problem="P",
+                        problem_id="p",
+                        n_rounds=3,
+                        enable_council=False,
+                        enable_compute=False,
+                        enable_final_critic=False,
+                    )
+                )
+
+            self.assertEqual(
+                calls,
+                [
+                    ("author", 0),
+                    ("critic", 0, "fresh", False),
+                    ("author", 1),
+                    ("critic", 1, "stateful", False),
+                    ("critic", 1, "fresh", True),
+                ],
+            )
+            self.assertTrue(out.early_stopped)
+            self.assertEqual(out.rounds_completed, 1)
+            self.assertTrue(out.last_critic_accepted)
+            self.assertEqual(out.final_critic_mode_run, "not_run")
+
+    def test_visual_init_noops_finalized_early_stop_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ctx = RunContext.create(run_id="run", root_workdir=root, flat=True)
+            _disable_event_writes(ctx)
+            workflow = ACWorkflow(ctx)
+            workspace = _workspace(ctx.root_workdir)
+            workspace.mkdir(parents=True)
+            (workspace / "answer.tex").write_text("done", encoding="utf-8")
+            (workspace / "research_notes.tex").write_text("notes", encoding="utf-8")
+            (workspace / "references.bib").write_text("", encoding="utf-8")
+            answer_path = ctx.root_workdir / "solutions" / "p.tex"
+            answer_path.parent.mkdir()
+            answer_path.write_text("done", encoding="utf-8")
+            workflow._save_resume_state(
+                workspace,
+                inp=ACWorkflow.Inputs(problem="P", problem_id="p", n_rounds=5),
+                last_round_run=2,
+                next_round=3,
+                review_history=[],
+                critic_conversation=[],
+                critic_instance_turn=0,
+                pending_council_text="",
+                pending_compute_text="",
+                pending_compute_zip_path=None,
+                pending_critique="",
+                early_stopped=True,
+                terminal_outputs={
+                    "answer_tex": "solutions/p.tex",
+                    "compiled": True,
+                    "pages": 1,
+                    "rounds_completed": 2,
+                    "early_stopped": True,
+                },
+            )
+
+            out = asyncio.run(
+                ACInitBlock(ctx)(
+                    problem="P",
+                    problem_id="p",
+                    n_rounds=5,
+                    enable_council=False,
+                    enable_compute=False,
+                    resume_run=True,
+                )
+            )
+
+            self.assertTrue(out.state["noop"])
+            self.assertTrue(out.state["loop_done"])
+            self.assertFalse(out.state["awaiting_finalization"])
+            self.assertTrue(out.state["early_stopped"])
+
     def test_default_terminal_author_round_gets_in_loop_critic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1112,28 +1251,39 @@ class ACResumeTests(unittest.TestCase):
             )
             seen: dict[str, object] = {}
 
-            async def fake_ac_run(self, inp):
+            async def fake_init_run(self, inp):
+                problem_id = inp.problem_id or "p"
+                workspace = self.ctx.root_workdir / "ac_workspaces" / problem_id
+                workspace.mkdir(parents=True, exist_ok=True)
+                return self.Outputs(
+                    state={
+                        "inputs": inp.model_dump(mode="json"),
+                        "workspace": str(workspace),
+                        "loop_done": True,
+                        "noop": False,
+                        "last_round_run": 0,
+                        "early_stopped": False,
+                        "review_history": [],
+                        "critic_conversation": [],
+                    }
+                )
+
+            async def fake_return_run(self, inp):
+                state = inp.state or {}
+                inputs = state.get("inputs") or {}
+                problem_id = str(inputs.get("problem_id") or "p")
                 seen["resume_from"] = self.ctx.resume_from
                 seen["root_workdir"] = self.ctx.root_workdir
-                seen["resume_run"] = inp.resume_run
-                out_path = self.ctx.root_workdir / "solutions" / "p.tex"
+                seen["resume_run"] = inputs.get("resume_run")
+                out_path = self.ctx.root_workdir / "solutions" / f"{problem_id}.tex"
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_text("answer", encoding="utf-8")
+                workspace = self.ctx.root_workdir / "ac_workspaces" / problem_id
                 return self.Outputs(
-                    problem_id=inp.problem_id,
+                    problem_id=problem_id,
                     answer_tex=out_path,
-                    research_notes_tex=(
-                        self.ctx.root_workdir
-                        / "ac_workspaces"
-                        / "p"
-                        / "research_notes.tex"
-                    ),
-                    references_bib=(
-                        self.ctx.root_workdir
-                        / "ac_workspaces"
-                        / "p"
-                        / "references.bib"
-                    ),
+                    research_notes_tex=workspace / "research_notes.tex",
+                    references_bib=workspace / "references.bib",
                     rounds_completed=0,
                 )
 
@@ -1152,7 +1302,9 @@ class ACResumeTests(unittest.TestCase):
                 "n_rounds=1",
             ]
             with patch.object(sys, "argv", argv), patch.object(
-                ACWorkflow, "run", fake_ac_run
+                ACInitBlock, "run", fake_init_run
+            ), patch.object(
+                ACReturnBlock, "run", fake_return_run
             ), patch(
                 "proofstack.events.JSONLSink.write",
                 side_effect=_noop_event_write,

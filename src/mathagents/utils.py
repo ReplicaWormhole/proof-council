@@ -149,8 +149,7 @@ def normalize_conversation(messages):
                             inferred_tool_name = prev.get("tool_name", prev.get("name"))
                             break
                 if inferred_tool_name is None:
-                    logger.warning("Tool response missing tool_name, defaulting to execute_code")
-                    inferred_tool_name = "execute_code"
+                    raise RuntimeError(f"Tool response missing tool_name and call_id could not be matched: {m}")
                 cm["tool_name"] = inferred_tool_name
 
             # Get tool call id

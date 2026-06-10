@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT))
 
 from app.dev_data import (  # noqa: E402
     discover_exported_presets,
+    discover_presets,
     mutate_preset_yaml,
+    preset_dag_report,
     save_tool_definition,
     validate_preset_yaml,
 )
@@ -376,6 +378,21 @@ class DevDataMutationTests(unittest.TestCase):
         self.assertEqual(router["else"], {"False": True})
         self.assertNotIn(True, router["then"])
         self.assertNotIn(False, router["else"])
+
+    def test_removed_proof_work_templates_cannot_be_added(self) -> None:
+        raw_yaml = textwrap.dedent(
+            """
+            workflow: proofstack.agents.dag_workflow.DAGWorkflow
+            dag:
+              nodes: []
+              outputs: {}
+            """
+        )
+        for template in ("solver", "validator", "improver", "map_chain", "join"):
+            with self.subTest(template=template):
+                result = mutate_preset_yaml(raw_yaml, {"op": "add_node", "template": template})
+                self.assertFalse(result["ok"])
+                self.assertIn("has been removed", " ".join(result["errors"]))
 
     def test_add_parallel_svi_node_creates_python_agent_node(self) -> None:
         raw_yaml = _mutate(
@@ -1142,6 +1159,23 @@ class DevDataMutationTests(unittest.TestCase):
         self.assertEqual(verifier["then"], {"ok": True})
         self.assertEqual(verifier["else"], {"gap": True})
 
+    def test_update_repeat_body_node_text_uses_visual_editor_id(self) -> None:
+        raw_yaml = _mutate(
+            REPEAT_FIXTURE,
+            {
+                "op": "update_node",
+                "node_id": "loop::body::verifier",
+                "fields": {
+                    "label": "Verify draft",
+                    "subtitle": "Checks the current draft.",
+                },
+            },
+        )
+        verifier = _raw(raw_yaml)["dag"]["nodes"][1]["body"]["nodes"][0]
+
+        self.assertEqual(verifier["ui"]["label"], "Verify draft")
+        self.assertEqual(verifier["ui"]["subtitle"], "Checks the current draft.")
+
     def test_update_when_supports_equals_and_invalid_length_limits_fail(self) -> None:
         raw_yaml = _mutate(
             EDITOR_FIXTURE,
@@ -1221,6 +1255,118 @@ class DevDataMutationTests(unittest.TestCase):
         self.assertEqual(presets[0]["name"], "subagent")
         self.assertEqual(presets[0]["inputs"], ["problem", "solution"])
         self.assertEqual(presets[0]["outputs"], ["solution", "verdict", "verification"])
+
+    def test_author_critic_preset_validates_as_visual_dag_wrapper(self) -> None:
+        raw_yaml = (ROOT / "configs" / "workflows" / "author_critic.yaml").read_text(encoding="utf-8")
+
+        validation = validate_preset_yaml(raw_yaml)
+        route_report = preset_dag_report("author_critic").to_dict()
+
+        expected_nodes = ["problem", "author_critic_loop", "return"]
+        expected_body = [
+            "author",
+            "stateful_critic",
+            "llm_council",
+            "compute_node",
+            "fresh_critic",
+            "review_join",
+            "ready_gate",
+            "compile_gate",
+        ]
+        for report in (validation, route_report):
+            self.assertTrue(report["ok"], report["errors"])
+            self.assertEqual(report["errors"], [])
+            self.assertEqual([node["id"] for node in report["nodes"]], expected_nodes)
+            self.assertEqual(report["nodes"][0]["agent"], "proofstack.agents.ac.ACInitBlock")
+            self.assertEqual(report["nodes"][1]["kind"], "repeat")
+            body = report["nodes"][1]["config"]["body"]["nodes"]
+            self.assertEqual([node["id"] for node in body], expected_body)
+            body_by_id = {node["id"]: node for node in body}
+            self.assertIn("answer_tex", body_by_id["author"]["output_fields"])
+            self.assertIn("answer_ready", body_by_id["stateful_critic"]["output_fields"])
+            self.assertIn("feedback", body_by_id["llm_council"]["output_fields"])
+            self.assertIn("response_md", body_by_id["compute_node"]["output_fields"])
+            self.assertIn("ready_for_gate", body_by_id["review_join"]["output_fields"])
+            self.assertEqual(body_by_id["compile_gate"]["output_fields"], ["state"])
+            self.assertEqual(report["nodes"][-1]["agent"], "proofstack.agents.ac.ACReturnBlock")
+            self.assertIn("answer_tex", report["workflow_outputs"])
+            self.assertTrue(report["edges"])
+            self.assertTrue(all(edge["status"] == "ok" for edge in report["edges"]))
+            self.assertIn("n_rounds", report["workflow_inputs"])
+            self.assertIn("problem", report["workflow_input_schema"])
+
+    def test_firstproof_submission_preset_is_app_runnable(self) -> None:
+        raw_yaml = (ROOT / "configs" / "workflows" / "firstproof_submission.yaml").read_text(encoding="utf-8")
+
+        validation = validate_preset_yaml(raw_yaml)
+        route_report = preset_dag_report("firstproof_submission").to_dict()
+        preset_names = {preset.name: preset for preset in discover_presets()}
+        raw = yaml.safe_load(raw_yaml)
+
+        self.assertIn("firstproof_submission", preset_names)
+        self.assertEqual(preset_names["firstproof_submission"].label, "FirstProof Submission")
+        self.assertEqual(raw["inputs"]["n_rounds"], 200)
+        self.assertEqual(raw["budget"]["max_usd"], 1000.0)
+        self.assertEqual(raw["inputs"]["page_limit"], 12)
+        expected_nodes = ["problem", "author_critic_loop", "return"]
+        expected_body = [
+            "author",
+            "stateful_critic",
+            "llm_council",
+            "compute_node",
+            "fresh_critic",
+            "review_join",
+            "ready_gate",
+            "compile_gate",
+        ]
+        for report in (validation, route_report):
+            self.assertTrue(report["ok"], report["errors"])
+            self.assertEqual(report["errors"], [])
+            self.assertEqual([node["id"] for node in report["nodes"]], expected_nodes)
+            body = report["nodes"][1]["config"]["body"]["nodes"]
+            self.assertEqual([node["id"] for node in body], expected_body)
+            self.assertEqual(report["nodes"][-1]["agent"], "proofstack.agents.ac.ACReturnBlock")
+            self.assertIn("answer_tex", report["workflow_outputs"])
+            self.assertTrue(report["edges"])
+            self.assertTrue(all(edge["status"] == "ok" for edge in report["edges"]))
+
+    def test_author_critic_smoke_mini_preset_is_all_mini_and_app_runnable(self) -> None:
+        raw_yaml = (ROOT / "configs" / "workflows" / "author_critic_smoke_mini.yaml").read_text(encoding="utf-8")
+
+        validation = validate_preset_yaml(raw_yaml)
+        route_report = preset_dag_report("author_critic_smoke_mini").to_dict()
+        preset_names = {preset.name: preset for preset in discover_presets()}
+        raw = yaml.safe_load(raw_yaml)
+
+        self.assertIn("author_critic_smoke_mini", preset_names)
+        self.assertEqual(preset_names["author_critic_smoke_mini"].label, "Author Critic Smoke Mini")
+        self.assertEqual(raw["components"]["Author"]["model"], "models/openai/gpt-54-mini")
+        self.assertNotIn("USE_CONTAINER_FILES", raw["components"]["Author"])
+        self.assertEqual(raw["components"]["ACCritic"]["model"], "models/openai/gpt-54-mini")
+        self.assertEqual(raw["inputs"]["full_critic_interval"], 3)
+        self.assertEqual(raw["inputs"]["council_models"], ["models/openai/gpt-54-mini"] * 3)
+        self.assertEqual(raw["inputs"]["compute_model"], "gpt-5.4-mini")
+        self.assertEqual(raw["inputs"]["compute_cost_config"], "models/openai/gpt-54-mini")
+        for report in (validation, route_report):
+            self.assertTrue(report["ok"], report["errors"])
+            self.assertEqual(report["errors"], [])
+            self.assertEqual([node["id"] for node in report["nodes"]], ["problem", "author_critic_loop", "return"])
+            body = report["nodes"][1]["config"]["body"]["nodes"]
+            self.assertEqual(
+                [node["id"] for node in body],
+                [
+                    "author",
+                    "stateful_critic",
+                    "llm_council",
+                    "compute_node",
+                    "fresh_critic",
+                    "review_join",
+                    "ready_gate",
+                    "compile_gate",
+                ],
+            )
+            self.assertTrue(report["edges"])
+            self.assertTrue(all(edge["status"] == "ok" for edge in report["edges"]))
 
     def test_repeat_internal_edges_are_mutable_from_visual_node_ids(self) -> None:
         raw_yaml = _mutate(

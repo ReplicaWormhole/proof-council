@@ -1,17 +1,16 @@
 [project]
-name = "mathagents"
+name = "proofcouncil"
 version = "0.1.0"
-description = "Query and agent stack ported from MathArena."
+description = "ProofCouncil math-research agent system."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
     "aristotlelib",
     "anthropic>=0.84.0",
     "axiom-axle>=1.1.0",
-    "docker>=7.1.0",
     "flask>=3.1.0",
     "loguru>=0.7.3",
-    "modal>=1.0.0",
     "numpy>=2.1.0",
     "openai>=1.102.0",
     "pillow>=11.0.0",

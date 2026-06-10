@@ -8,6 +8,52 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class EditorTemplateContractTests(unittest.TestCase):
+    def test_home_page_renders_favicon_above_title(self) -> None:
+        template = (ROOT / "app" / "templates" / "dev_home.html").read_text()
+        base = (ROOT / "app" / "templates" / "dev_base.html").read_text()
+
+        self.assertLess(template.index("home-logo"), template.index("<h1>ProofCouncil</h1>"))
+        self.assertIn("filename='favicon.png'", template)
+        self.assertIn(".home-logo", base)
+        self.assertIn("object-fit: contain;", base)
+
+
+    def test_run_agent_exposes_monitor_controls(self) -> None:
+        template = (ROOT / "app" / "templates" / "dev_run_agent.html").read_text()
+        base = (ROOT / "app" / "templates" / "dev_base.html").read_text()
+
+        self.assertIn("run-agent-monitor-enabled", template)
+        self.assertIn("run-agent-monitor-model", template)
+        self.assertIn("monitor_model_options", template)
+        self.assertIn("monitorKeyRequirements", template)
+        self.assertIn("function activeApiKeyRequirements", template)
+        self.assertIn("monitor: document.getElementById('run-agent-monitor-enabled')", template)
+        self.assertIn("monitor_model: document.getElementById('run-agent-monitor-model')", template)
+        self.assertIn('.run-agent-field input[type="checkbox"]', base)
+
+    def test_editor_sample_run_exposes_monitor_controls(self) -> None:
+        template = (ROOT / "app" / "templates" / "dev_preset_editor.html").read_text()
+        base = (ROOT / "app" / "templates" / "dev_base.html").read_text()
+
+        self.assertIn("sample-monitor-enabled", template)
+        self.assertIn("sample-monitor-model", template)
+        self.assertIn("monitor_model_options", template)
+        self.assertIn("monitor: document.getElementById('sample-monitor-enabled')", template)
+        self.assertIn("monitor_model: document.getElementById('sample-monitor-model')", template)
+        self.assertIn(".sample-runner select", base)
+
+    def test_run_detail_has_live_monitor_section(self) -> None:
+        template = (ROOT / "app" / "templates" / "dev_run_detail.html").read_text()
+        base = (ROOT / "app" / "templates" / "dev_base.html").read_text()
+
+        self.assertIn("run-monitor-section", template)
+        self.assertIn("dev_run_monitor.html", template)
+        self.assertIn("startRunMonitorPolling", template)
+        self.assertLess(template.index("Workflow input"), template.index("Monitor summaries"))
+        self.assertLess(template.index("Monitor summaries"), template.index("Workflow output"))
+        self.assertIn("function startRunMonitorPolling", base)
+        self.assertIn(".monitor-summary", base)
+
     def test_workflow_output_edges_from_repeat_nodes_are_mapped_before_output_target(self) -> None:
         template = (ROOT / "app" / "templates" / "dev_preset_editor.html").read_text()
         start = template.index("function buildCanvasEdges")
@@ -129,6 +175,37 @@ class EditorTemplateContractTests(unittest.TestCase):
         self.assertIn("node_id: template === 'workflow_ref'", add_body)
         self.assertIn("template === 'python_agent'", add_body)
         self.assertNotIn("template: 'parallel_svi'", template)
+        for obsolete in (
+            "template: 'solver'",
+            "template: 'validator'",
+            "template: 'improver'",
+            "template: 'map_chain'",
+            "template: 'join'",
+            "Proof Writer",
+            "Checker",
+            "Fixer",
+            "Parallel Proof Attempts",
+            "Merge Proofs",
+        ):
+            self.assertNotIn(obsolete, template)
+
+    def test_repeat_max_iterations_input_can_show_expressions(self) -> None:
+        template = (ROOT / "app" / "templates" / "dev_preset_editor.html").read_text()
+        start = template.index("function nodeLoopSection")
+        end = template.index("function repeatStateEditor", start)
+        body = template[start:end]
+
+        self.assertIn("repeatMaxIterationsInputAttrs", body)
+        self.assertIn("Object.prototype.hasOwnProperty.call(cfg, 'max_iterations')", body)
+        self.assertIn("type=\"text\" spellcheck=\"false\"", template)
+        self.assertNotIn('type="number" min="1" value="${escapeAttr(editorValue(cfg.max_iterations || 3))}', body)
+
+    def test_inspector_sections_preserve_user_open_state(self) -> None:
+        template = (ROOT / "app" / "templates" / "dev_preset_editor.html").read_text()
+        self.assertIn("const inspectorSectionOpenStates = new Map();", template)
+        self.assertIn("data-inspector-section-key", template)
+        self.assertIn("handleInspectorSectionToggle", template)
+        self.assertIn("section: 'outputs'", template)
 
     def test_if_else_nodes_render_branch_output_editor(self) -> None:
         template = (ROOT / "app" / "templates" / "dev_preset_editor.html").read_text()
@@ -284,6 +361,30 @@ class EditorTemplateContractTests(unittest.TestCase):
 
         self.assertIn("if (edge.edge_kind === 'dependency') continue;", body)
 
+    def test_existing_workflow_inputs_only_edit_default_values(self) -> None:
+        template = (ROOT / "app" / "templates" / "dev_preset_editor.html").read_text()
+        base = (ROOT / "app" / "templates" / "dev_base.html").read_text()
+        start = template.index("function workflowInputsEditorHtml")
+        body = template[start:template.index("function workflowBudgetEditorHtml", start)]
+        start = template.index("function mappingEditor")
+        mapping_body = template[start:template.index("function wiringHeader", start)]
+        start = template.index("function wiringRow")
+        row_body = template[start:template.index("function customWiringValueControl", start)]
+
+        self.assertIn("displayFields: true", body)
+        self.assertIn("allowAdd: true", body)
+        self.assertIn("allowRemove: true", body)
+        self.assertIn("lockedFields: workflowNames", body)
+        self.assertIn("Add workflow input", body)
+        self.assertIn("const allowRemove = options.allowRemove !== false;", mapping_body)
+        self.assertIn("const displayFields = Boolean(options.displayFields);", mapping_body)
+        self.assertIn("displayField: displayFields", mapping_body)
+        self.assertIn("allowRemove", mapping_body)
+        self.assertIn("const displayField = Boolean(rowOptions.displayField);", row_body)
+        self.assertIn("rowOptions.allowRemove === false", row_body)
+        self.assertIn(".wiring-rows", base)
+        self.assertIn(".io-panel .wiring-field-display", base)
+
     def test_input_editor_add_row_uses_plain_name_field(self) -> None:
         template = (ROOT / "app" / "templates" / "dev_preset_editor.html").read_text()
         base = (ROOT / "app" / "templates" / "dev_base.html").read_text()
@@ -371,6 +472,10 @@ class EditorTemplateContractTests(unittest.TestCase):
         self.assertIn("function untiePromptFromSelected", template)
         self.assertIn("op: 'untie_component'", template)
         self.assertIn(".prompt-tie-actions-single", base)
+        self.assertIn(".prompt-tie-actions select", base)
+        self.assertIn("appearance: none;", base)
+        self.assertIn("min-height: 38px;", base)
+        self.assertIn(".prompt-tie-actions button", base)
 
     def test_empty_graph_ports_do_not_render_none_text(self) -> None:
         template = (ROOT / "app" / "templates" / "dev_preset_editor.html").read_text()

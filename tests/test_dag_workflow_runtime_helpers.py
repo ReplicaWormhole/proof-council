@@ -317,6 +317,46 @@ class DAGWorkflowRuntimeHelperTests(unittest.TestCase):
         self.assertEqual(len(out["history"]), 1)
         self.assertEqual(workflow.events.items[0][0], "dag.loop_iteration_started")
 
+
+    def test_loop_history_serializes_pydantic_node_outputs_for_conditions(self) -> None:
+        class VerifierOutput(BaseModel):
+            verdict: str
+            verification: str = ""
+
+        workflow = DAGWorkflow.__new__(DAGWorkflow)
+        workflow.events = _Events()
+
+        async def run_nodes(_nodes, scope, **_kwargs):
+            scope["node"]["verifier"] = VerifierOutput(verdict="correct", verification="ok")
+            scope["node"]["improver"] = {"solution": "improved"}
+            return False
+
+        workflow._run_nodes = run_nodes
+        state = {"node": {}, "input": {}, "best_tex": None}
+        node = {
+            "id": "loop",
+            "kind": "repeat",
+            "max_iterations": 3,
+            "initial_state": {"solution": "start"},
+            "condition": {
+                "python": (
+                    'iteration == 0 or '
+                    'str(history[-1]["node"].get("verifier", {}).get("verdict", "")).strip().lower() != "correct"'
+                )
+            },
+            "body": {
+                "nodes": [{"id": "verifier", "kind": "agent"}],
+                "state_updates": {"solution": "$node.improver.solution"},
+            },
+            "outputs": {"history": "$history", "iterations": "$loop.iterations", "reason": "$loop.reason"},
+        }
+
+        out = asyncio.run(workflow._run_loop_node(node, state))
+
+        self.assertEqual(out["iterations"], 1)
+        self.assertEqual(out["reason"], "condition_false")
+        self.assertEqual(out["history"][0]["node"]["verifier"]["verdict"], "correct")
+
     def test_workflow_ref_inherits_parent_workflow_inputs(self) -> None:
         workflow = DAGWorkflow.__new__(DAGWorkflow)
         with tempfile.TemporaryDirectory() as temp_dir:

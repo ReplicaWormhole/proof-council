@@ -1,4 +1,4 @@
-"""proofstack — modular agent layer for mathagents.
+"""proofstack — modular agent layer for ProofCouncil.
 
 The package is intentionally async-first
 and Pydantic-typed; every Agent subclass declares Inputs/Outputs models

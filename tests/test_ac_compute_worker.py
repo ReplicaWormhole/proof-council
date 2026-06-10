@@ -47,34 +47,9 @@ def test_compute_codex_command_uses_current_exec_flags() -> None:
     # First Proof already runs inside an isolated submitter container.
     # Bypass Codex's nested bubblewrap sandbox so exec/apply_patch/finish
     # work in unprivileged Docker/Podman.
-    assert "--full-auto" not in cmd
     assert "--sandbox" not in cmd
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd
     assert cmd[-1] == "-"
-
-
-def test_compute_codex_full_auto_legacy_alias_uses_supported_flag() -> None:
-    cmd = _build_codex_cmd(
-        model="gpt-5.5",
-        reasoning_effort="xhigh",
-        sandbox=SandboxSpec(backend="subprocess"),
-        codex_sandbox="full-auto",
-    )
-
-    assert "--full-auto" not in cmd
-    assert "--sandbox" in cmd
-    assert cmd[cmd.index("--sandbox") + 1] == "workspace-write"
-
-
-def test_pwc_worker_yaml_does_not_use_removed_codex_flags() -> None:
-    text = (ROOT / "configs" / "workflows" / "pwc_round.yaml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "--ignore-user-config" not in text
-    assert "--ephemeral" not in text
-
-
 def test_dockerfile_pins_and_smokes_codex_cli() -> None:
     text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     pwc_text = (ROOT / "deploy" / "sandbox" / "Dockerfile.pwc").read_text(
@@ -262,7 +237,7 @@ exit 0
                     instructions="do the computation",
                     compute_workspace=temp / "compute",
                     sandbox_backend="subprocess",
-                    codex_sandbox="full-auto",
+                    codex_sandbox="workspace-write",
                 )
             )
         finally:
@@ -303,7 +278,7 @@ exit 0
                     instructions="do the computation",
                     compute_workspace=temp / "compute",
                     sandbox_backend="subprocess",
-                    codex_sandbox="full-auto",
+                    codex_sandbox="workspace-write",
                 )
             )
         finally:
@@ -346,7 +321,7 @@ exit 0
                     instructions="do the computation",
                     compute_workspace=compute_root,
                     sandbox_backend="subprocess",
-                    codex_sandbox="full-auto",
+                    codex_sandbox="workspace-write",
                 )
             )
         finally:

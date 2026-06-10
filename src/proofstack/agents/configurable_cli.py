@@ -314,17 +314,8 @@ def _with_codex_sandbox_flag(cmd: list[str], mode: str, backend: str) -> list[st
         flag = ["--dangerously-bypass-approvals-and-sandbox"]
     elif mode in {"workspace-write", "workspace"}:
         flag = ["--sandbox", "workspace-write"]
-    elif mode in {"full-auto", "full_auto"}:
-        # codex >= 0.132 dropped the ``--full-auto`` shorthand. Its old
-        # semantics (no approval prompts + workspace-write sandbox) are
-        # equivalent to ``--sandbox workspace-write`` under
-        # ``codex exec`` — which is non-interactive by default in the
-        # new CLI. Map the historical mode name onto that flag so YAML
-        # presets declaring ``compute_codex_sandbox: full-auto`` keep
-        # working without churn.
-        flag = ["--sandbox", "workspace-write"]
     else:
-        return cmd
+        raise ValueError(f"unsupported codex_sandbox mode: {mode!r}")
     prompt_idx = _codex_prompt_arg_index(cmd)
     if prompt_idx is not None:
         return [*cmd[:prompt_idx], *flag, *cmd[prompt_idx:]]
@@ -448,7 +439,7 @@ def _codex_prompt_arg_index(cmd: list[str]) -> int | None:
 
 def _has_codex_sandbox_flag(cmd: list[str]) -> bool:
     return any(
-        part in {"--dangerously-bypass-approvals-and-sandbox", "--sandbox", "--full-auto"}
+        part in {"--dangerously-bypass-approvals-and-sandbox", "--sandbox"}
         for part in cmd
     )
 

@@ -13,9 +13,9 @@ Use this file before searching runtime code. Most workflow-only agents can be bu
 
 Good examples to copy:
 
-- `configs/workflows/verify_improve.yaml` for a one-step verifier/improver subworkflow.
-- `configs/workflows/jaunty_proof.yaml` for a repeat loop and a workflow output.
-- `configs/workflows/nimble_proof.yaml` for literature search, code/web tools, a repeat loop, BibTeX, and compile.
+- `configs/workflows/prescreen.yaml` for a compact prompt workflow with structured outputs.
+- `configs/workflows/author_critic.yaml` for a repeat loop, council/compute branches, and compile gating.
+- `configs/workflows/firstproof_smoke_fast.yaml` for a cheap harness smoke preset built from the same Author/Critic blocks.
 
 ## References
 
@@ -113,7 +113,7 @@ Most nodes should still be YAML-configured prompt or CLI components. Add a custo
 
 A custom node is a normal `Agent` subclass in `src/proofstack/agents/`. Keep the public `Inputs` small and semantic. Do not add editor or graph-builder special cases for one node. The class should carry its own optional `PALETTE`, `default_component_config()`, `component_config_editor()`, and `HIDDEN_GRAPH_INPUTS` metadata so the generic editor can discover it and render its component settings.
 
-For example, `ParallelSolveVerifyImprove` is available in the node palette and exposes only `problem` and optional `literature_search` as graph ports; `n`, `m`, and the solver/verifier/improver/merger prompts stay in `components.<name>` config instead of becoming graph ports.
+For example, `ParallelSolveVerifyImprove` is available in the node palette and exposes only `problem` as a graph port; `n`, `m`, and the solver/verifier/improver/merger prompts stay in `components.<name>` config instead of becoming graph ports.
 
 ```yaml
 - id: parallel_svi
@@ -122,7 +122,6 @@ For example, `ParallelSolveVerifyImprove` is available in the node palette and e
   name: cfg_parallel_svi
   inputs:
     problem: $input.problem
-    literature_search: $node.literature_search.literature_notes
 ```
 
 The corresponding component config can override prompts and models without changing the node shape:

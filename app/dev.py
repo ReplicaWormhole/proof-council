@@ -1,4 +1,4 @@
-"""Local developer dashboard for ProofStack.
+"""Local developer dashboard for ProofCouncil.
 
 Localhost-only Flask app for editing workflow-backed agents and browsing
 run outputs.
@@ -24,15 +24,15 @@ from zoneinfo import ZoneInfo
 
 import yaml
 # Launching as a plain script (`uv run python app/dev.py …`) puts
-# `app/` first on sys.path, which makes `import app` resolve to the
-# viewer script at `app/app.py` instead of this package. Prepend the repo
-# root so `from app.dev_data …` finds the sibling module.
+# `app/` first on sys.path. Prepend the repo root so
+# `from app.dev_data …` resolves the package.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 from mathagents.config_loader import load_solver_config
+from proofstack.monitor import DEFAULT_MONITOR_MODEL, normalize_monitor_model_spec
 
 from app.dev_data import (
     create_tool_definition,
@@ -49,6 +49,7 @@ from app.dev_data import (
     find_run,
     load_call_detail,
     load_event_tree,
+    load_monitor_summaries,
     load_execution_graph,
     mutate_preset_yaml,
     presets_registry_version,
@@ -84,6 +85,35 @@ PROVIDER_API_KEYS = {
     "together": "TOGETHER_API_KEY",
     "xai": "XAI_API_KEY",
 }
+
+
+def _relative_model_ref(model: Any) -> str:
+    raw = str(model or "").strip()
+    if raw.startswith("models/"):
+        return raw.removeprefix("models/")
+    return raw
+
+
+def _monitor_model_options() -> list[str]:
+    seen: set[str] = set()
+    options: list[str] = []
+    for ref in discover_model_options():
+        rel = _relative_model_ref(ref)
+        if rel and rel not in seen:
+            seen.add(rel)
+            options.append(rel)
+    default = _relative_model_ref(DEFAULT_MONITOR_MODEL)
+    if default and default not in seen:
+        options.append(default)
+    return sorted(options)
+
+
+def _monitor_key_requirements() -> dict[str, list[dict[str, Any]]]:
+    env = _dashboard_subprocess_env()
+    return {
+        model: _api_key_requirements_for_model(normalize_monitor_model_spec(model), env)
+        for model in _monitor_model_options()
+    }
 
 
 def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
@@ -193,6 +223,8 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
             presets=presets,
             preset_signature=presets_registry_version(),
             problems=_discover_problem_files(),
+            monitor_model_options=_monitor_model_options(),
+            monitor_key_requirements=_monitor_key_requirements(),
             key_requirements={
                 p.name: _api_key_requirements_for_preset(p.name)
                 for p in presets
@@ -211,6 +243,9 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
             max_parallel = max(1, int(payload.get("max_parallel") or 1))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "errors": ["Max parallel runs must be a number."]}), 400
+
+        monitor_enabled = bool(payload.get("monitor"))
+        monitor_model = str(normalize_monitor_model_spec(payload.get("monitor_model") or DEFAULT_MONITOR_MODEL))
 
         try:
             problems = _selected_run_problems(payload)
@@ -231,6 +266,13 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
             for req in _api_key_requirements_for_preset(preset_name, env=env)
             if not req["present"]
         ]
+        if monitor_enabled:
+            missing.extend(
+                req["env"]
+                for req in _api_key_requirements_for_model(monitor_model, env)
+                if not req["present"]
+            )
+            missing = sorted(set(missing))
         if missing:
             return jsonify({"ok": False, "errors": [f"Missing API keys: {', '.join(missing)}"]}), 400
 
@@ -251,6 +293,7 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
                     "display_name": display_name,
                     "started_by": "dashboard",
                     "preset": preset_name,
+                    "monitor": {"enabled": monitor_enabled, "model": monitor_model if monitor_enabled else None},
                     "started_at": datetime.now().isoformat(timespec="seconds"),
                     "manifest": {
                         "started_at": datetime.now().isoformat(timespec="seconds"),
@@ -288,6 +331,8 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
             "--max-parallel",
             str(max_parallel),
         ]
+        if monitor_enabled:
+            cmd.extend(["--monitor", "--monitor-model", monitor_model])
         with log_path.open("a", encoding="utf-8") as log:
             subprocess.Popen(
                 cmd,
@@ -333,6 +378,7 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
             preset=preset,
             report=report.to_dict(),
             model_options=discover_model_options(),
+            monitor_model_options=_monitor_model_options(),
             preset_registry_version=presets_registry_version(),
             agent_palette_items=discover_agent_palette_items(),
             exported_presets=discover_exported_presets(),
@@ -505,6 +551,8 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
             or "Prove that the square root of 2 is irrational."
         ).strip()
         problem_id = _slug(str(payload.get("problem_id") or "editor_sample"))
+        monitor_enabled = bool(payload.get("monitor"))
+        monitor_model = str(normalize_monitor_model_spec(payload.get("monitor_model") or DEFAULT_MONITOR_MODEL))
         display_name = _run_display_name(preset.label, [{"id": problem_id}])
         outputs_root = REPO_ROOT / "outputs"
         run_id = _next_run_id(_slug(display_name).lower(), outputs_root)
@@ -518,6 +566,7 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
                     "display_name": display_name,
                     "started_by": "dashboard",
                     "preset": name,
+                    "monitor": {"enabled": monitor_enabled, "model": monitor_model if monitor_enabled else None},
                     "problem_id": problem_id,
                 },
                 indent=2,
@@ -542,6 +591,8 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
             "--output",
             str(outputs_root),
         ]
+        if monitor_enabled:
+            cmd.extend(["--monitor", "--monitor-model", monitor_model])
         with log_path.open("a", encoding="utf-8") as log:
             subprocess.Popen(
                 cmd,
@@ -577,6 +628,9 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
         exec_graph = load_execution_graph(run.path, tree=tree)
         workflow_input = workflow_input_from_tree(tree)
         workflow_output = workflow_output_from_tree(tree)
+        monitor_summaries = load_monitor_summaries(run.path, graph=exec_graph)
+        show_monitor = bool(run.monitor_enabled or monitor_summaries)
+        show_execution_graph = bool(run.has_events or (run.status == "running" and not run.problems))
         return render_template(
             "dev_run_detail.html",
             run=run,
@@ -584,6 +638,9 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
             exec_graph=exec_graph,
             workflow_input=workflow_input,
             workflow_output=workflow_output,
+            monitor_summaries=monitor_summaries,
+            show_monitor=show_monitor,
+            show_execution_graph=show_execution_graph,
         )
 
     @app.route("/run/<run_id>/graph-fragment")
@@ -594,6 +651,19 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
         tree = load_event_tree(run.path)
         exec_graph = load_execution_graph(run.path, tree=tree)
         return render_template("dev_run_graph.html", run=run, tree=tree, exec_graph=exec_graph)
+
+    @app.route("/run/<run_id>/monitor-fragment")
+    def run_monitor_fragment(run_id: str):
+        run = find_run(app.config["RUNS_ROOTS"], run_id)
+        if run is None:
+            abort(404)
+        tree = load_event_tree(run.path)
+        exec_graph = load_execution_graph(run.path, tree=tree)
+        return render_template(
+            "dev_run_monitor.html",
+            run=run,
+            monitor_summaries=load_monitor_summaries(run.path, graph=exec_graph),
+        )
 
     @app.route("/run/<run_id>/call/<call_ref>")
     def call_detail(run_id: str, call_ref: str):
@@ -641,7 +711,7 @@ def create_app(runs_roots: tuple[Path, ...] = DEFAULT_RUNS_ROOTS) -> Flask:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="ProofStack local dashboard",
+        description="ProofCouncil local dashboard",
     )
     p.add_argument("--port", type=int, default=5002)
     p.add_argument("--host", default="127.0.0.1")
@@ -695,20 +765,41 @@ def _discover_problem_files() -> list[dict[str, str]]:
     if not PROBLEMS_ROOT.exists():
         return []
     problems: list[dict[str, str]] = []
-    for path in sorted(PROBLEMS_ROOT.glob("*.txt")):
+    for path in sorted(PROBLEMS_ROOT.iterdir(), key=lambda item: item.name):
+        if not path.is_file() or path.name.startswith("."):
+            continue
         try:
             text = path.read_text(encoding="utf-8").strip()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         preview = " ".join(text.split())
+        problem_id = path.stem
         problems.append(
             {
-                "id": path.stem,
-                "title": path.stem.replace("_", " "),
+                "id": path.stem if path.suffix == ".txt" else path.name,
+                "title": problem_id.replace("_", " "),
                 "preview": preview[:180],
             }
         )
     return problems
+
+
+def _problem_file_for_id(file_id: str) -> Path | None:
+    candidates = [PROBLEMS_ROOT / file_id]
+    if Path(file_id).suffix == "":
+        candidates.append(PROBLEMS_ROOT / f"{file_id}.txt")
+    try:
+        root = PROBLEMS_ROOT.resolve()
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved.parent == root and resolved.is_file():
+            return resolved
+    return None
 
 
 def _selected_run_problems(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -716,17 +807,17 @@ def _selected_run_problems(payload: dict[str, Any]) -> list[dict[str, str]]:
     seen: set[str] = set()
     for raw_id in payload.get("problems") or []:
         file_id = str(raw_id or "").strip()
-        if not file_id or "/" in file_id or "\\" in file_id:
+        if not file_id or Path(file_id).name != file_id or "/" in file_id or "\\" in file_id:
             continue
-        problem_id = _slug(file_id)
+        path = _problem_file_for_id(file_id)
+        if path is None:
+            raise ValueError(f"Problem not found: {file_id}")
+        problem_id = _slug(path.stem)
         if problem_id in seen:
             continue
-        path = PROBLEMS_ROOT / f"{file_id}.txt"
-        if not path.exists() or path.parent != PROBLEMS_ROOT:
-            raise ValueError(f"Problem not found: {file_id}")
         text = path.read_text(encoding="utf-8").strip()
         if text:
-            out.append({"id": problem_id, "text": text, "display_name": _human_label(problem_id)})
+            out.append({"id": problem_id, "text": text, "latex": text, "display_name": _human_label(problem_id)})
             seen.add(problem_id)
     return out
 

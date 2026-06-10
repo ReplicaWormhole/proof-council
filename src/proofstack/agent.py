@@ -115,6 +115,7 @@ class Agent(ABC):
         # emitted at the boundary (start, end, cache_hit, error) must
         # carry the caller as parent_call_id, not ourselves.
         parent_call_id = _PARENT_CALL_ID.get()
+        agent_path_for_monitor = ".".join(_AGENT_PATH.get() + (self.name,))
 
         if type(self).cache_enabled:
             cached = self.ctx.resume_cache.get(cache_key)
@@ -162,6 +163,14 @@ class Agent(ABC):
                     call_id=call_id,
                     parent_call_id=parent_call_id,
                 )
+                await self._record_monitor_end(
+                    call_id=call_id,
+                    agent_path=agent_path_for_monitor,
+                    input_json=inp_json,
+                    output_json=None,
+                    status="error",
+                    error={"type": "BudgetExhausted", "msg": str(e), "scope": e.scope},
+                )
                 raise
             except Exception as e:
                 _PARENT_CALL_ID.reset(token_parent)
@@ -173,6 +182,14 @@ class Agent(ABC):
                     {"type": type(e).__name__, "msg": str(e)},
                     call_id=call_id,
                     parent_call_id=parent_call_id,
+                )
+                await self._record_monitor_end(
+                    call_id=call_id,
+                    agent_path=agent_path_for_monitor,
+                    input_json=inp_json,
+                    output_json=None,
+                    status="error",
+                    error={"type": type(e).__name__, "msg": str(e)},
                 )
                 raise
         finally:
@@ -198,9 +215,44 @@ class Agent(ABC):
             execution_mode=type(self).execution_mode,
             parent_call_id=parent_call_id,
         )
+        await self._record_monitor_end(
+            call_id=call_id,
+            agent_path=agent_path_for_monitor,
+            input_json=inp_json,
+            output_json=out_json,
+            status="ok",
+            error=None,
+        )
         return out
 
     # --- helpers --------------------------------------------------------------
+
+    async def _record_monitor_end(
+        self,
+        *,
+        call_id: str,
+        agent_path: str,
+        input_json: Any,
+        output_json: Any,
+        status: str,
+        error: dict[str, Any] | None,
+    ) -> None:
+        monitor = getattr(self.ctx, "monitor", None)
+        if monitor is None:
+            return
+        try:
+            monitor.schedule_agent_end(
+                call_id=call_id,
+                agent=self.name,
+                agent_path=agent_path,
+                execution_mode=type(self).execution_mode,
+                input_json=input_json,
+                output_json=output_json,
+                status=status,
+                error=error,
+            )
+        except Exception:
+            return
 
     def _cache_key(self, inp: BaseModel) -> str:
         payload = {

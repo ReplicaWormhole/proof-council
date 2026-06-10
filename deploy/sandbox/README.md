@@ -1,4 +1,4 @@
-# ProofStack CLI sandbox image
+# ProofCouncil CLI sandbox image
 
 Minimal Docker image used by `DockerSandbox` (SPEC §3.3.1) to wrap
 Codex-driven `ConfigurableCLIAgent` invocations. Distinct from the

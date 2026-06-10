@@ -1,6 +1,6 @@
-# ProofStack Workflow Docker Image
+# ProofCouncil Workflow Docker Image
 
-This image packages the current config-first ProofStack runner.
+This image packages the current config-first ProofCouncil runner.
 
 The container entrypoint is:
 
@@ -13,13 +13,13 @@ Run arguments are the same as the local runner.
 ## Example
 
 ```bash
-docker build -f deploy/Dockerfile -t proofstack-workflow .
+docker build -f deploy/Dockerfile -t proofcouncil-workflow .
 docker run --rm \
   -v $(pwd)/problems/example.txt:/data/input/problem.txt:ro \
   -v $(pwd)/local-output:/data/output \
   -e OPENAI_API_KEY \
-  proofstack-workflow \
-  --workflow nimble_proof \
+  proofcouncil-workflow \
+  --workflow author_critic \
   --problem /data/input/problem.txt \
   --output /data/output \
   --run-id demo
@@ -29,7 +29,7 @@ Equivalent local command:
 
 ```bash
 uv run python scripts/run_workflow.py \
-  --workflow nimble_proof \
+  --workflow author_critic \
   --problem problems/example.txt \
   --output local-output \
   --run-id demo

@@ -2,27 +2,19 @@
 set -euo pipefail
 
 # Launch the FirstProof adapter on smoke/input.json *without* Docker.
-# Usage: ./smoke/run_local.sh [fast|full]
+# Usage: ./smoke/run_local.sh
 #
 # Outputs land in smoke/output/. Inspect with:
 #   jq '.per_problem[] | {id,status,returncode,duration_seconds}' \
 #       smoke/output/run_summary.json
 
-VARIANT="${1:-fast}"
-case "$VARIANT" in
-    fast)
-        WORKFLOW="firstproof_smoke_fast"
-        VARIANT_BUDGET_USD=5
-        ;;
-    full)
-        WORKFLOW="firstproof_smoke_full"
-        VARIANT_BUDGET_USD=15
-        ;;
-    *)
-        echo "Usage: $0 [fast|full]" >&2
-        exit 2
-        ;;
-esac
+if [[ "${1:-}" != "" && "${1:-}" != "fast" ]]; then
+    echo "Usage: $0" >&2
+    exit 2
+fi
+
+WORKFLOW="firstproof_smoke_fast"
+VARIANT_BUDGET_USD=5
 
 SMOKE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SMOKE_DIR/.." && pwd)"
@@ -55,7 +47,7 @@ export FIRSTPROOF_INPUT_PATH="$INPUT"
 export FIRSTPROOF_OUTPUT_DIR="$OUTPUT"
 export FIRSTPROOF_WORKFLOW="$WORKFLOW"
 export FIRSTPROOF_MAX_PARALLEL="${FIRSTPROOF_MAX_PARALLEL:-6}"
-export FIRSTPROOF_HEALTHCHECK="${FIRSTPROOF_HEALTHCHECK:-off}"
+export FIRSTPROOF_HEALTHCHECK=off
 export MATHAGENTS_CONFIGS_ROOT="${MATHAGENTS_CONFIGS_ROOT:-$REPO_ROOT/configs}"
 export PROOFSTACK_SANDBOX_BACKEND="${PROOFSTACK_SANDBOX_BACKEND:-subprocess}"
 # The entrypoint forwards n_rounds + page_limit to every workflow
@@ -73,7 +65,6 @@ export FIRSTPROOF_PAGE_LIMIT="${FIRSTPROOF_PAGE_LIMIT:-8}"
 # the README documents.
 export FIRSTPROOF_BUDGET_USD_PER_QUESTION="${FIRSTPROOF_BUDGET_USD_PER_QUESTION:-$VARIANT_BUDGET_USD}"
 
-echo "==> smoke variant:      $VARIANT"
 echo "==> workflow preset:    $WORKFLOW"
 echo "==> input:              $INPUT"
 echo "==> output:             $OUTPUT"

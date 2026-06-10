@@ -1,8 +1,6 @@
 """Local-subprocess Python / C++ runner.
 
-Replaces the Modal-based ``mathagents.tools.code_execution`` per
-SPEC §3.3.1. No external runtime; the orchestrator's container is the
-sandbox.
+No external runtime; the orchestrator's container is the sandbox.
 
 Public callable: ``run_code(code, lang)``. Designed to be exposed as a
 plain function-tool to a MultiTurnAgent.

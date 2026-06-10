@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+import app.dev as dev  # noqa: E402
 from app.dev import create_app  # noqa: E402
 from app.dev_data import discover_runs, find_run  # noqa: E402
 
@@ -23,7 +26,226 @@ def _write_event(path: Path, **event) -> None:
         f.write(json.dumps(event) + "\n")
 
 
+def _batch_module():
+    spec = importlib.util.spec_from_file_location("run_workflow_batch", ROOT / "scripts" / "run_workflow_batch.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class RunDiscoveryTests(unittest.TestCase):
+    def test_run_agent_problem_picker_discovers_non_txt_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "example.txt").write_text("Plain text problem.", encoding="utf-8")
+            (root / "hilbert.tex").write_text(r"\begin{problem}Hilbert\end{problem}", encoding="utf-8")
+            (root / "notes.md").write_text("# Markdown problem", encoding="utf-8")
+            (root / ".hidden.tex").write_text("hidden", encoding="utf-8")
+
+            with patch.object(dev, "PROBLEMS_ROOT", root):
+                problems = dev._discover_problem_files()
+
+        self.assertEqual([p["id"] for p in problems], ["example", "hilbert.tex", "notes.md"])
+        self.assertEqual([p["title"] for p in problems], ["example", "hilbert", "notes"])
+
+    def test_run_agent_problem_selection_accepts_exact_filenames(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "example.txt").write_text("Plain text problem.", encoding="utf-8")
+            (root / "hilbert.tex").write_text("TeX problem.", encoding="utf-8")
+
+            with patch.object(dev, "PROBLEMS_ROOT", root):
+                selected = dev._selected_run_problems({"problems": ["example", "hilbert.tex"]})
+
+        self.assertEqual(
+            selected,
+            [
+                {"id": "example", "text": "Plain text problem.", "latex": "Plain text problem.", "display_name": "Example"},
+                {"id": "hilbert", "text": "TeX problem.", "latex": "TeX problem.", "display_name": "Hilbert"},
+            ],
+        )
+
+    def test_batch_problem_loader_accepts_run_agent_text_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            problems_path = Path(tmp) / "problems.json"
+            _write_json(
+                problems_path,
+                {"problems": [{"id": "sqrt2", "text": "Prove sqrt(2) is irrational.", "display_name": "Sqrt 2"}]},
+            )
+
+            problems = _batch_module()._load_problems(problems_path)
+
+        self.assertEqual(
+            problems,
+            [{"id": "sqrt2", "latex": "Prove sqrt(2) is irrational.", "display_name": "Sqrt 2"}],
+        )
+
+    def test_batch_child_run_name_does_not_repeat_single_problem_label(self) -> None:
+        batch = _batch_module()
+
+        self.assertEqual(
+            batch._child_run_name(
+                "Author Critic Smoke Mini · Brokenarxiv Sample",
+                "author_critic_smoke_mini",
+                {"id": "brokenarxiv_sample", "display_name": "Brokenarxiv Sample"},
+            ),
+            "Author Critic Smoke Mini · Brokenarxiv Sample",
+        )
+        self.assertEqual(
+            batch._child_run_name(
+                "Jaunty Proof · 2 problems",
+                "jaunty_proof",
+                {"id": "hard", "display_name": "Hard Problem"},
+            ),
+            "Jaunty Proof · 2 problems · Hard Problem",
+        )
+
+    def test_batch_run_detail_waits_for_missing_child_run_instead_of_linking_404(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            batch_dir = root / "batch-run"
+            batch_dir.mkdir()
+            _write_json(
+                batch_dir / "run-metadata.json",
+                {
+                    "display_name": "Author Critic · Example",
+                    "manifest": {
+                        "started_at": "2026-06-04T18:04:00",
+                        "problems": {
+                            "example": {
+                                "status": "queued",
+                                "problem_id": "example",
+                                "display_name": "Example",
+                                "run_id": "batch-run-example",
+                            }
+                        },
+                    },
+                },
+            )
+            app = create_app(runs_roots=(root,))
+
+            with app.test_client() as client:
+                response = client.get("/run/batch-run")
+
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Waiting for run...", html)
+        self.assertNotIn('href="/run/batch-run-example"', html)
+
+    def test_batch_run_detail_shows_early_launcher_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            batch_dir = root / "batch-run"
+            batch_dir.mkdir()
+            _write_json(
+                batch_dir / "run-metadata.json",
+                {
+                    "status": "starting",
+                    "display_name": "Author Critic · Example",
+                    "manifest": {
+                        "started_at": "2026-06-04T18:04:00",
+                        "problems": {
+                            "example": {
+                                "status": "queued",
+                                "problem_id": "example",
+                                "display_name": "Example",
+                                "run_id": "batch-run-example",
+                            }
+                        },
+                    },
+                },
+            )
+            (batch_dir / "dashboard-subprocess.log").write_text("problem example: empty problem text\n", encoding="utf-8")
+            app = create_app(runs_roots=(root,))
+
+            with app.test_client() as client:
+                response = client.get("/run/batch-run")
+
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("error", html)
+        self.assertIn("problem example: empty problem text", html)
+        self.assertNotIn('href="/run/batch-run-example"', html)
+
+    def test_starting_unmonitored_run_polls_graph_without_monitor_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "sample-run"
+            run_dir.mkdir()
+            _write_json(
+                run_dir / "run-metadata.json",
+                {
+                    "status": "starting",
+                    "display_name": "Sample Run",
+                    "preset": "demo",
+                    "monitor": {"enabled": False, "model": None},
+                },
+            )
+            app = create_app(runs_roots=(root,))
+
+            with app.test_client() as client:
+                response = client.get("/run/sample-run")
+
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Execution graph", html)
+        self.assertIn("startRunGraphPolling", html)
+        self.assertIn("No workflow node events recorded.", html)
+        self.assertNotIn("Monitor summaries", html)
+        self.assertNotIn('id="run-monitor-panel"', html)
+        self.assertNotIn('startRunMonitorPolling("/run/sample-run/monitor-fragment")', html)
+
+    def test_starting_monitored_run_shows_monitor_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "sample-run"
+            run_dir.mkdir()
+            _write_json(
+                run_dir / "run-metadata.json",
+                {
+                    "status": "starting",
+                    "display_name": "Sample Run",
+                    "preset": "demo",
+                    "monitor": {"enabled": True, "model": "models/openai/gpt-54-mini"},
+                },
+            )
+            app = create_app(runs_roots=(root,))
+
+            with app.test_client() as client:
+                response = client.get("/run/sample-run")
+
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Monitor summaries", html)
+        self.assertIn("startRunMonitorPolling", html)
+        self.assertIn("No monitor summaries yet.", html)
+
+    def test_finished_monitored_run_keeps_monitor_section_from_config_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "sample-run"
+            run_dir.mkdir()
+            _write_json(
+                run_dir / "run-metadata.json",
+                {
+                    "status": "ok",
+                    "display_name": "Sample Run",
+                    "config_snapshot": {
+                        "monitor": {"enabled": True, "model": "models/openai/gpt-54-mini"},
+                    },
+                },
+            )
+            app = create_app(runs_roots=(root,))
+
+            with app.test_client() as client:
+                response = client.get("/run/sample-run")
+
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Monitor summaries", html)
+        self.assertIn("No monitor summaries yet.", html)
+
     def test_discover_runs_uses_display_name_and_problem_summary_from_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -57,6 +279,34 @@ class RunDiscoveryTests(unittest.TestCase):
         self.assertEqual(runs[0].display_name, "Readable Batch")
         self.assertEqual(runs[0].problem_summary, "2 problems")
         self.assertEqual(runs[0].status, "running")
+
+    def test_discover_runs_collapses_repeated_display_name_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "duplicated-title"
+            run_dir.mkdir()
+            events_path = run_dir / "events.jsonl"
+            _write_event(
+                events_path,
+                ts="2026-05-08T09:00:00.000Z",
+                kind="run.start",
+                payload={
+                    "display_name": "Author Critic Smoke Mini · Brokenarxiv Sample · Brokenarxiv Sample",
+                },
+            )
+            _write_event(
+                events_path,
+                ts="2026-05-08T09:01:00.000Z",
+                kind="run.end",
+                payload={"status": "ok"},
+            )
+
+            runs = discover_runs([root])
+
+        self.assertEqual(
+            runs[0].display_name,
+            "Author Critic Smoke Mini · Brokenarxiv Sample",
+        )
 
     def test_discover_runs_fills_single_problem_from_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,6 +608,58 @@ class RunDiscoveryTests(unittest.TestCase):
         self.assertIn("<summary>verification</summary>", html)
         self.assertIn("The proof has a gap.", html)
         self.assertNotIn("internal raw text", html)
+
+    def test_call_detail_renders_recorded_messages_as_ordered_turns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "run"
+            agent_dir = run_dir / "agents" / "ACCritic-c1-critic-call"
+            agent_dir.mkdir(parents=True)
+            events_path = run_dir / "events.jsonl"
+            _write_event(
+                events_path,
+                ts="2026-05-08T09:00:00.000Z",
+                kind="agent.start",
+                call_id="critic-call",
+                agent="ACCritic",
+                agent_path="DAGWorkflow.ACCritic",
+                execution_mode="agent",
+                payload={"input": {"mode": "stateful", "prior_messages": [{"role": "user", "content": "old"}]}},
+            )
+            _write_event(
+                events_path,
+                ts="2026-05-08T09:01:00.000Z",
+                kind="agent.end",
+                call_id="critic-call",
+                agent="ACCritic",
+                agent_path="DAGWorkflow.ACCritic",
+                payload={"output": {"review_md": "done"}},
+            )
+            (agent_dir / "messages.json").write_text(
+                json.dumps(
+                    [
+                        {"role": "user", "content": "initial fresh critic prompt"},
+                        {"role": "assistant", "content": "prior referee report"},
+                        {"role": "user", "content": "stateful revised-draft prompt"},
+                    ],
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            app = create_app(runs_roots=(root,))
+
+            with app.test_client() as client:
+                response = client.get("/run/run/call/1")
+
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("user #1", html)
+        self.assertIn("assistant #1", html)
+        self.assertIn("user #2", html)
+        self.assertIn("initial fresh critic prompt", html)
+        self.assertIn("prior referee report", html)
+        self.assertIn("stateful revised-draft prompt", html)
+
 
     def test_internal_events_are_not_exposed_in_run_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

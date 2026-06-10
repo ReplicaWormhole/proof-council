@@ -1,6 +1,6 @@
 {% extends "dev_base.html" %}
 {% set active_tab = 'run_agent' %}
-{% block title %}Run Agent — ProofStack{% endblock %}
+{% block title %}Run Agent — ProofCouncil{% endblock %}
 {% block content %}
     <div class="page-header-row">
         <h1>Run Agent</h1>
@@ -22,6 +22,20 @@
                 <label class="run-agent-field compact">
                     Max parallel runs
                     <input id="run-agent-max-parallel" type="number" min="1" value="1">
+                </label>
+                <label class="run-agent-field compact">
+                    <span>
+                        <input id="run-agent-monitor-enabled" type="checkbox">
+                        Monitor runs
+                    </span>
+                </label>
+                <label class="run-agent-field">
+                    Monitor model
+                    <select id="run-agent-monitor-model">
+                        {% for model in monitor_model_options %}
+                            <option value="{{ model }}" {% if model == 'openai/gpt-54-mini' %}selected{% endif %}>{{ model }}</option>
+                        {% endfor %}
+                    </select>
                 </label>
             </section>
 
@@ -73,6 +87,7 @@
         const presetsDataUrl = {{ url_for('presets_data') | tojson }};
         let presetSignature = {{ preset_signature | tojson }};
         let keyRequirements = {{ key_requirements | tojson }};
+        const monitorKeyRequirements = {{ monitor_key_requirements | tojson }};
 
         function escapeHtml(value) {
             return String(value ?? '').replace(/[&<>"']/g, (ch) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
@@ -120,9 +135,29 @@
             }
         }
 
+        function activeApiKeyRequirements() {
+            const byEnv = new Map();
+            const selected = [...(keyRequirements[selectedPresetName()] || [])];
+            if (document.getElementById('run-agent-monitor-enabled')?.checked) {
+                const monitorModel = document.getElementById('run-agent-monitor-model')?.value || 'openai/gpt-54-mini';
+                selected.push(...(monitorKeyRequirements[monitorModel] || []));
+            }
+            selected.forEach((req) => {
+                if (!req?.env) return;
+                const existing = byEnv.get(req.env);
+                if (!existing) {
+                    byEnv.set(req.env, {...req, models: [...(req.models || [])]});
+                    return;
+                }
+                existing.present = existing.present || req.present;
+                existing.models = [...new Set([...(existing.models || []), ...(req.models || [])])];
+            });
+            return [...byEnv.values()];
+        }
+
         function renderApiKeys() {
             const target = document.getElementById('api-key-list');
-            const requirements = keyRequirements[selectedPresetName()] || [];
+            const requirements = activeApiKeyRequirements();
             if (!target) return;
             if (!requirements.length) {
                 target.innerHTML = '<p class="dim">No external model API key was inferred for this agent.</p>';
@@ -203,6 +238,8 @@
                 max_parallel: document.getElementById('run-agent-max-parallel')?.value || '1',
                 problems: [...document.querySelectorAll('[data-problem-id]:checked')].map((input) => input.dataset.problemId),
                 api_keys: apiKeys,
+                monitor: document.getElementById('run-agent-monitor-enabled')?.checked || false,
+                monitor_model: document.getElementById('run-agent-monitor-model')?.value || 'openai/gpt-54-mini',
             };
             if (status) status.textContent = 'Starting...';
             const response = await fetch('{{ url_for("run_agent_start") }}', {
@@ -219,6 +256,8 @@
         }
 
         document.getElementById('run-agent-preset')?.addEventListener('change', renderApiKeys);
+        document.getElementById('run-agent-monitor-enabled')?.addEventListener('change', renderApiKeys);
+        document.getElementById('run-agent-monitor-model')?.addEventListener('change', renderApiKeys);
         renderApiKeys();
         window.setInterval(pollPresetRegistry, 1000);
     </script>

@@ -415,16 +415,38 @@ def _editor_config(
         for step in cfg["steps"]:
             if not isinstance(step, dict):
                 continue
-            step["component_key"] = _component_key(step)
-            step["component_config"] = _component_config(step, component_configs)
+            _enrich_editor_embedded_node(step, component_configs)
     body = cfg.get("body")
     if isinstance(body, dict) and isinstance(body.get("nodes"), list):
         for body_node in body["nodes"]:
             if not isinstance(body_node, dict):
                 continue
-            body_node["component_key"] = _component_key(body_node)
-            body_node["component_config"] = _component_config(body_node, component_configs)
+            _enrich_editor_embedded_node(body_node, component_configs)
     return cfg
+
+
+def _enrich_editor_embedded_node(
+    node: dict[str, Any],
+    component_configs: dict[str, dict[str, Any]],
+) -> None:
+    component_config = _component_config(node, component_configs)
+    outputs_schema = _infer_outputs_schema(node, component_configs)
+    node["component_key"] = _component_key(node)
+    node["component_config"] = component_config
+    node["inputs_schema"] = _infer_inputs_schema(node)
+    node["outputs_schema"] = outputs_schema
+    node["input_fields"] = _infer_input_fields(node, component_config)
+    node["output_fields"] = _editor_output_fields(node, outputs_schema)
+
+
+def _editor_output_fields(node: dict[str, Any], outputs_schema: dict[str, Any]) -> list[str]:
+    if _is_repeat_kind(node.get("kind")):
+        outputs = node.get("outputs")
+        if isinstance(outputs, dict):
+            return sorted(str(key) for key in outputs)
+    if node.get("kind") == "if_else":
+        return _if_else_public_output_fields(node)
+    return sorted(outputs_schema)
 
 
 def _merge_dicts(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -484,19 +506,13 @@ def _infer_outputs_schema(
             props["condition"] = {"type": "boolean"}
         return _apply_output_schema_overrides(node, props)
     if _is_repeat_kind(kind):
+        state_props = _repeat_state_properties(node)
         outputs = node.get("outputs")
         if isinstance(outputs, dict):
-            return {str(key): {"type": "string"} for key in outputs}
-        state_props: dict[str, Any] = {}
-        initial_state = node.get("initial_state")
-        if isinstance(initial_state, dict):
-            for key in initial_state:
-                state_props.setdefault(str(key), {"type": "string"})
-        body = node.get("body")
-        state_updates = body.get("state_updates") if isinstance(body, dict) else node.get("state_updates")
-        if isinstance(state_updates, dict):
-            for key, value in state_updates.items():
-                state_props.setdefault(str(key), _schema_for_state_update(value))
+            return {
+                str(key): _schema_for_repeat_output(value, state_props)
+                for key, value in outputs.items()
+            }
         props = {
             "state": {"type": "object", "properties": state_props},
             "history": {"type": "array", "items": {"type": "object"}},
@@ -550,9 +566,37 @@ def _schema_for_state_update(value: Any) -> dict[str, Any]:
         return {"type": "array", "items": {}}
     if isinstance(value, dict):
         return {"type": "object"}
-    if isinstance(value, str) and re.fullmatch(r"\$node\.[A-Za-z_][A-Za-z0-9_-]*", value):
-        return {"type": "object"}
+    if isinstance(value, str):
+        match = re.fullmatch(r"\$node\.[A-Za-z_][A-Za-z0-9_-]*(?:\.([A-Za-z0-9_.-]+))?", value)
+        if match:
+            path = match.group(1) or ""
+            if not path or path.split(".")[0] == "state":
+                return {"type": "object"}
     return {"type": "string"}
+
+
+def _repeat_state_properties(node: dict[str, Any]) -> dict[str, Any]:
+    state_props: dict[str, Any] = {}
+    initial_state = node.get("initial_state")
+    if isinstance(initial_state, dict):
+        for key, value in initial_state.items():
+            state_props.setdefault(str(key), _schema_for_state_update(value))
+    body = node.get("body")
+    state_updates = body.get("state_updates") if isinstance(body, dict) else node.get("state_updates")
+    if isinstance(state_updates, dict):
+        for key, value in state_updates.items():
+            state_props[str(key)] = _schema_for_state_update(value)
+    return state_props
+
+
+def _schema_for_repeat_output(value: Any, state_props: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(value, str):
+        match = re.fullmatch(r"\$state\.([A-Za-z_][A-Za-z0-9_.-]*)", value)
+        if match:
+            schema = _schema_at_path(state_props, match.group(1))
+            if schema:
+                return schema
+    return _schema_for_state_update(value)
 
 
 def _configured_prompt_outputs(
@@ -823,6 +867,8 @@ def _infer_target_schema(
     parts = target_path.split(".")
     if len(parts) >= 2 and parts[0] == "when" and parts[1] == "inputs":
         return {"type": "any"}
+    if _is_repeat_kind(node.get("kind")) and len(parts) >= 2 and parts[0] == "initial_state":
+        return _repeat_state_properties(node).get(parts[1], {"type": "any"})
     if "inputs" not in parts:
         return {}
     idx = parts.index("inputs")

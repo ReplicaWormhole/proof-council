@@ -1,7 +1,7 @@
-# mathagents — project description
+# ProofCouncil — project description
 
-This repository will be the implementation of an autonomous math-research
-agent system targeting the **First Proof Foundation, Second Batch**
+This repository will be the implementation of ProofCouncil, an autonomous
+math-research agent system targeting the **First Proof Foundation, Second Batch**
 benchmark (June 2026). Beyond the benchmark, the same system is intended
 to grow into a human-in-the-loop research assistant for mathematicians.
 
@@ -12,46 +12,30 @@ workflow syntax and reusable YAML components.
 
 ## What this repo currently is
 
-A ProofStack workflow framework built on the MathArena provider/tool
+A ProofCouncil workflow framework built on the MathArena provider/tool
 layer. The kept pieces are:
 
 - `src/mathagents/api_client.py` — robust multi-provider client (OpenAI,
   Anthropic, Google, xAI, DeepSeek, GLM, Moonshot, Together, vLLM, …)
   with retries, batch processing, tool-call loops, and cost accounting.
-- `src/mathagents/tools/` — `code_execution` (Modal + Docker fallback),
-  `paper_search` (Semantic Scholar + GLM OCR), `query_knowledge` (OEIS,
-  Wikipedia, Wolfram).
+- `src/proofstack/tools/` — local workflow tools such as code execution and
+  persisted files.
 - `configs/models/` — layered YAML model definitions with `base:`
   inheritance.
 - `configs/workflows/` — DAG workflow presets. Read
   `configs/workflows/instructions.md` before creating or editing these.
-- `app/` — Flask viewer for `outputs/<run>/*.json` artifacts.
+- `app/` — Flask developer dashboard for workflow runs, presets, and traces.
 - `scripts/run_workflow.py` — CLI entry point for workflow presets.
-
-## What it is becoming
-
-A modular framework where every "agent" — single API call, CLI subprocess
-(Codex / Claude Code), or multi-turn tool-using loop — is a free-standing
-unit with typed input / output channels, history, and cost tracking.
-Workflows are composed by passing agents to other agents (tools may
-themselves be agents). A non-technical mathematician should be able to
-describe a new sub-agent conceptually and get something working with a
-prompt template plus a small config.
-
-The autopilot benchmark mode and a future human-in-the-loop UI are two
-front-ends on the same agent layer.
-
-For new workflow work, follow `configs/workflows/instructions.md`.
 
 ---
 
 ## Repo layout
 
 ```
-src/mathagents/      # API client, config loader, and reusable tools
+src/mathagents/      # API client, config loader, and provider-side tools
 src/proofstack/      # Workflow/agent runtime
 configs/             # YAML configs (models/, tools/, workflows/)
-app/                 # Flask output viewer
+app/                 # Flask developer dashboard
 scripts/             # CLI entry points
 problems/            # Plain-text problem files
 outputs/             # Run artifacts (JSON; gitignored)
@@ -75,14 +59,14 @@ Run a workflow preset:
 
 ```bash
 uv run python scripts/run_workflow.py \
-  --workflow configs/workflows/nimble_proof.yaml \
+  --workflow author_critic \
   --problem "Prove that there are infinitely many primes."
 ```
 
-Browse outputs:
+Browse outputs and presets:
 
 ```bash
-uv run python app/app.py --output-folder demo-run
+uv run python app/dev.py
 ```
 
 ---
@@ -128,13 +112,3 @@ reference for the workflow runtime and should prevent spelunking through
    reusable component guidance; required before creating or editing
    workflow preset YAML.
 3. **`README.md`** — how to install + run today.
-
-## Out of scope (for now)
-
-- A web UI for the human-in-the-loop mode. Capture the *requirements*
-  for it (event log shape, agent introspection) before building, but do
-  not build it before the benchmark.
-- Re-implementing what `APIClient` already handles (provider quirks,
-  retries, batch processing, response normalization).
-- Generic "AI productivity" features unrelated to mathematical proof
-  workflows.

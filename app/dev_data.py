@@ -38,6 +38,7 @@ REPEAT_BODY_MARKER = "::body::"
 REPEAT_INPUT_SUFFIX = "::repeat_input"
 REPEAT_OUTPUT_SUFFIX = "::repeat_output"
 REPEAT_RUNTIME_FIELDS = {"history", "iteration", "iterations", "next_iteration", "reason"}
+REMOVED_NODE_TEMPLATES = {"solver", "validator", "improver", "map_chain", "join"}
 
 
 def _is_repeat_node(node: dict[str, Any] | None) -> bool:
@@ -315,6 +316,7 @@ class RenderedMessages:
     """Best-effort reproduction of what an APICallAgent sent to the model."""
     system: str | None = None
     user: str | None = None
+    turns: list[dict[str, str]] = field(default_factory=list)
     source: str = "reconstructed"
     error: str | None = None       # populated if rendering failed
 
@@ -325,11 +327,20 @@ def render_recorded_messages(messages: list[dict[str, Any]] | None) -> RenderedM
         return None
     system_parts: list[str] = []
     user_parts: list[str] = []
+    turns: list[dict[str, str]] = []
+    counts: dict[str, int] = {}
     for msg in messages:
-        role = msg.get("role")
+        role = str(msg.get("role") or "message")
         content = _message_text(msg.get("content"))
         if not content:
             continue
+        display_role = "system" if role in ("system", "developer") else role
+        counts[display_role] = int(counts.get(display_role, 0) or 0) + 1
+        turns.append({
+            "role": display_role,
+            "label": f"{display_role} #{counts[display_role]}",
+            "text": content,
+        })
         if role in ("system", "developer"):
             system_parts.append(content)
         elif role == "user":
@@ -337,6 +348,7 @@ def render_recorded_messages(messages: list[dict[str, Any]] | None) -> RenderedM
     return RenderedMessages(
         system="\n\n---\n\n".join(system_parts) or None,
         user="\n\n---\n\n".join(user_parts) or None,
+        turns=turns,
         source="recorded",
     )
 
@@ -425,6 +437,7 @@ class RunInfo:
     wallclock_s: float | None = None
     n_problems: int | None = None
     has_events: bool = False
+    monitor_enabled: bool = False
     problems: dict[str, Any] = field(default_factory=dict)
 
 
@@ -478,6 +491,15 @@ def _read_run_info(path: Path) -> RunInfo:
         info.display_name = str(meta.get("display_name") or meta.get("run_name") or "").strip()
         info.status = _normalize_run_status(meta.get("status"))
         info.preset = str(meta.get("preset") or "").strip() or None
+        monitor = meta.get("monitor") or {}
+        if not isinstance(monitor, dict):
+            monitor = {}
+        config_snapshot = meta.get("config_snapshot") or {}
+        if not monitor and isinstance(config_snapshot, dict):
+            snapshot_monitor = config_snapshot.get("monitor") or {}
+            if isinstance(snapshot_monitor, dict):
+                monitor = snapshot_monitor
+        info.monitor_enabled = bool(monitor.get("enabled"))
         info.cost_usd = meta.get("cost_usd")
         info.wallclock_s = meta.get("wallclock_s")
         config_snapshot = meta.get("config_snapshot") or {}
@@ -509,6 +531,7 @@ def _read_run_info(path: Path) -> RunInfo:
             if problem_status in {"error", "running"} or info.status is None:
                 info.status = problem_status
             info.problem_summary = _problem_summary(problems)
+        _enrich_from_dashboard_subprocess_log(info, finished_at=finished_at)
     # Fallback / fill-in from events.jsonl. ``run_workflow.py`` runs do
     # not produce a manifest block, so totals + timestamps come straight
     # from the event log. Cheap O(n) scan, ~kB-sized files.
@@ -521,8 +544,6 @@ def _read_run_info(path: Path) -> RunInfo:
 def _batch_child_run_ids(infos: Iterable[RunInfo]) -> set[str]:
     child_ids: set[str] = set()
     for info in infos:
-        if len(info.problems) <= 1:
-            continue
         for problem in info.problems.values():
             if isinstance(problem, dict):
                 run_id = str(problem.get("run_id") or "").strip()
@@ -533,7 +554,7 @@ def _batch_child_run_ids(infos: Iterable[RunInfo]) -> set[str]:
 
 def _aggregate_batch_runs(seen: dict[str, RunInfo]) -> None:
     for info in seen.values():
-        if len(info.problems) <= 1:
+        if not info.problems:
             continue
         total_cost = 0.0
         saw_cost = False
@@ -541,6 +562,7 @@ def _aggregate_batch_runs(seen: dict[str, RunInfo]) -> None:
             if not isinstance(problem, dict):
                 continue
             child = seen.get(str(problem.get("run_id") or ""))
+            problem["has_run"] = child is not None
             if child is None:
                 continue
             if child.cost_usd is not None:
@@ -548,10 +570,47 @@ def _aggregate_batch_runs(seen: dict[str, RunInfo]) -> None:
                 saw_cost = True
             if not problem.get("started_at") and child.started_at:
                 problem["started_at"] = child.started_at
-            if not problem.get("status") and child.status:
+            if child.status:
                 problem["status"] = child.status
         if saw_cost:
             info.cost_usd = total_cost
+
+
+def _enrich_from_dashboard_subprocess_log(info: RunInfo, *, finished_at: Any) -> None:
+    if finished_at or info.status != "running":
+        return
+    message = _dashboard_subprocess_failure_message(info.path / "dashboard-subprocess.log")
+    if not message:
+        return
+    info.status = "error"
+    for problem in info.problems.values():
+        if not isinstance(problem, dict):
+            continue
+        if _normalize_run_status(problem.get("status")) == "running":
+            problem["status"] = "error"
+            problem["error"] = message
+
+
+def _dashboard_subprocess_failure_message(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    lower = text.lower()
+    markers = (
+        "traceback (most recent call last):",
+        "modulenotfounderror",
+        "syntaxerror",
+        "systemexit",
+        "empty latex",
+        "empty problem text",
+    )
+    if not any(marker in lower for marker in markers):
+        return ""
+    return lines[-1][:500]
 
 
 def _enrich_from_events(info: RunInfo) -> None:
@@ -611,6 +670,7 @@ def _finalize_run_info(info: RunInfo) -> None:
     if info.status is None:
         info.status = "running" if info.has_events else "finished"
     if info.display_name:
+        info.display_name = _dedupe_display_name(info.display_name)
         return
     preset_label = _preset_label(info.preset)
     if preset_label and info.problem_summary:
@@ -618,9 +678,24 @@ def _finalize_run_info(info: RunInfo) -> None:
     elif preset_label:
         info.display_name = preset_label
     elif info.started_at:
-        info.display_name = f"ProofStack Run · {_short_local_time(info.started_at)}"
+        info.display_name = f"ProofCouncil Run · {_short_local_time(info.started_at)}"
     else:
         info.display_name = _humanize_problem_id(info.run_id)
+    info.display_name = _dedupe_display_name(info.display_name)
+
+
+def _dedupe_display_name(value: str) -> str:
+    parts = [part.strip() for part in str(value or "").split("·")]
+    if len(parts) < 2:
+        return str(value or "").strip()
+    out: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        if out and out[-1] == part:
+            continue
+        out.append(part)
+    return " · ".join(out)
 
 
 def _problem_summary(problems: dict[str, Any]) -> str:
@@ -786,6 +861,8 @@ def load_event_tree(run_path: Path) -> RunEventTree:
     """Stream events.jsonl and reconstruct the call tree."""
     events_path = run_path / "events.jsonl"
     by_id: dict[str, CallNode] = {}
+    run_status = ""
+    run_end_ts: str | None = None
     if not events_path.exists():
         return RunEventTree(
             run_id=run_path.name,
@@ -806,6 +883,12 @@ def load_event_tree(run_path: Path) -> RunEventTree:
             kind = evt.get("kind")
             call_id = evt.get("call_id")
             parent_id = evt.get("parent_call_id")
+
+            if kind == "run.end":
+                payload = evt.get("payload") or {}
+                if isinstance(payload, dict):
+                    run_status = _normalize_run_status(payload.get("status")) or str(payload.get("status") or "")
+                run_end_ts = evt.get("ts")
 
             if kind in RUN_LEVEL_EVENT_KINDS:
                 continue
@@ -837,6 +920,14 @@ def load_event_tree(run_path: Path) -> RunEventTree:
                 node.end_ts = evt.get("ts")
                 node.duration_s = _duration(node.start_ts, node.end_ts)
                 node.error = evt.get("payload") or {}
+            elif kind == "workflow.last_gasp":
+                target = parent_id or call_id
+                if target:
+                    node = by_id.setdefault(str(target), CallNode(call_id=str(target)))
+                    node.status = "error"
+                    node.end_ts = evt.get("ts")
+                    node.duration_s = _duration(node.start_ts, node.end_ts)
+                    node.error = evt.get("payload") or {}
             elif kind == "agent.cache_hit" and call_id:
                 # Cache hits skip agent.start/agent.end (see Agent.__call__),
                 # so this is the only event carrying the call's identity.
@@ -878,6 +969,18 @@ def load_event_tree(run_path: Path) -> RunEventTree:
                 # Span-marker; ignore for tree building
                 continue
 
+    if run_status == "error":
+        for node in by_id.values():
+            if node.status != "running":
+                continue
+            node.status = "error"
+            node.end_ts = node.end_ts or run_end_ts
+            node.duration_s = _duration(node.start_ts, node.end_ts)
+            node.error = node.error or {
+                "type": "IncompleteCall",
+                "msg": "Run ended with an error before this call emitted a completion event.",
+            }
+
     # Build parent->children links (sorted by start_ts so the tree is stable)
     roots: list[CallNode] = []
     for node in by_id.values():
@@ -899,6 +1002,58 @@ def load_event_tree(run_path: Path) -> RunEventTree:
         by_id=by_id,
         by_ref=by_ref,
     )
+
+
+def load_monitor_summaries(run_path: Path, *, graph: ExecutionGraph | None = None) -> list[dict[str, Any]]:
+    events_path = run_path / "events.jsonl"
+    if not events_path.exists():
+        return []
+    labels_by_call_id = _monitor_labels_by_call_id(graph)
+    summaries: list[dict[str, Any]] = []
+    with events_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("kind") != "monitor.summary":
+                continue
+            payload = event.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            call_id = payload.get("call_id") or event.get("parent_call_id")
+            summaries.append(
+                {
+                    "ts": event.get("ts"),
+                    "agent": payload.get("agent"),
+                    "display_label": (
+                        payload.get("display_label")
+                        or labels_by_call_id.get(str(call_id or ""))
+                        or _monitor_fallback_label(payload.get("agent"), payload.get("agent_path"))
+                    ),
+                    "call_id": call_id,
+                    "status": payload.get("status"),
+                    "summary": payload.get("summary"),
+                }
+            )
+    return summaries
+
+
+def _monitor_labels_by_call_id(graph: ExecutionGraph | None) -> dict[str, str]:
+    if graph is None:
+        return {}
+    labels: dict[str, str] = {}
+    for node in graph.by_id.values():
+        if node.call_id and node.label:
+            labels[str(node.call_id)] = node.label
+    return labels
+
+
+def _monitor_fallback_label(agent: Any, agent_path: Any) -> str:
+    if str(agent or "") == "DAGWorkflow" or str(agent_path or "").endswith("DAGWorkflow"):
+        return "Workflow"
+    raw = str(agent or agent_path or "Monitor update").rsplit(".", 1)[-1]
+    return _humanize_id(raw)
 
 
 def workflow_output_from_tree(tree: RunEventTree) -> Any:
@@ -1031,10 +1186,12 @@ def load_execution_graph(
                         call_nodes[call_id] = attached
                         if evt.get("execution_mode") == "workflow":
                             workflow_call_nodes[call_id] = attached
-            elif kind == "agent.end":
+            elif kind in {"agent.end", "agent.error"}:
                 call_id = str(evt.get("call_id") or "")
                 parent_id = str(evt.get("parent_call_id") or "")
                 node = call_nodes.get(call_id)
+                if node is not None:
+                    _apply_agent_terminal_event_to_execution_graph_node(node, kind, payload, evt.get("ts"))
                 if node is not None and parent_id:
                     recent_completed_nodes.setdefault((parent_id, node.raw_id), []).append(node)
             continue
@@ -1084,7 +1241,8 @@ def load_execution_graph(
                 active_by_parent.setdefault(parent_id, []).append(node)
                 active_events.setdefault(_active_event_key(parent_id, payload), []).append(node)
         elif kind == "dag.node_done":
-            node.status = "ok"
+            if node.status != "error":
+                node.status = "ok"
             node.end_ts = ts
             node.duration_s = _duration(node.start_ts, node.end_ts)
             _drop_active_node(active_by_parent.get(parent_id, []), node)
@@ -1103,10 +1261,19 @@ def load_execution_graph(
             node.reason = str(payload.get("msg") or payload.get("kind") or "Node failed")
             _drop_active_node(active_by_parent.get(parent_id, []), node)
 
+    _add_nested_workflow_progress(
+        events,
+        roots,
+        by_id,
+        workflow_call_nodes=workflow_call_nodes,
+        call_nodes=call_nodes,
+    )
+
     if run_status == "error":
         for node in by_id.values():
             if node.status == "running":
                 node.status = "error"
+                node.reason = node.reason or "Run ended before this node finished."
 
     if tree is not None:
         for node in by_id.values():
@@ -1131,6 +1298,260 @@ def load_execution_graph(
         by_id=by_id,
         preset=preset_name,
     )
+
+
+def _add_nested_workflow_progress(
+    events: list[dict[str, Any]],
+    roots: list[ExecutionGraphNode],
+    by_id: dict[str, ExecutionGraphNode],
+    *,
+    workflow_call_nodes: dict[str, ExecutionGraphNode],
+    call_nodes: dict[str, ExecutionGraphNode],
+) -> None:
+    active: dict[str, ExecutionGraphNode] = {}
+    current_round: dict[str, ExecutionGraphNode] = {}
+    for evt in events:
+        kind = str(evt.get("kind") or "")
+        parent_id = str(evt.get("parent_call_id") or "")
+        payload = evt.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        ts = evt.get("ts")
+        workflow_node = workflow_call_nodes.get(parent_id)
+        if kind == "ac.round_start" and workflow_node is not None:
+            previous = current_round.get(parent_id)
+            if previous is not None and previous.status == "running":
+                previous.status = "ok"
+                previous.end_ts = ts
+                previous.duration_s = _duration(previous.start_ts, previous.end_ts)
+            round_value = payload.get("round")
+            label = f"Round {round_value}" if round_value is not None else "Round"
+            node = ExecutionGraphNode(
+                node_id=_unique_runtime_node_id(f"ac_round_{round_value}", by_id, parent_id=workflow_node.node_id),
+                raw_id=f"round_{round_value}",
+                label=label,
+                kind="ac_round",
+                status="running",
+                start_ts=ts,
+                parent_node_id=workflow_node.node_id,
+            )
+            _attach_execution_graph_node(node, roots, by_id, workflow_node)
+            current_round[parent_id] = node
+            continue
+        if kind.startswith("ac.") and workflow_node is not None:
+            milestone = _ac_milestone_node(kind, payload, ts, workflow_node, current_round.get(parent_id), roots, by_id)
+            if kind in {"ac.final_compile", "ac.last_gasp", "ac.resume_noop"}:
+                round_node = current_round.get(parent_id)
+                if round_node is not None and round_node.status == "running":
+                    round_node.status = "ok" if kind != "ac.last_gasp" else "error"
+                    round_node.end_ts = ts
+                    round_node.duration_s = _duration(round_node.start_ts, round_node.end_ts)
+            if milestone is not None:
+                continue
+        if kind == "agent.start" and workflow_node is not None:
+            call_id = str(evt.get("call_id") or "")
+            if not call_id or call_id in call_nodes:
+                continue
+            parent = _ac_figure_parent(evt, by_id) or current_round.get(parent_id) or workflow_node
+            if _is_ac_figure_block(parent):
+                _mark_ac_figure_block_started(parent, ts)
+            node = ExecutionGraphNode(
+                node_id=_unique_runtime_node_id(_nested_agent_node_id(evt), by_id, parent_id=parent.node_id),
+                raw_id=_nested_agent_raw_id(evt),
+                label=_nested_agent_label(evt),
+                kind=str(evt.get("execution_mode") or "agent"),
+                status="running",
+                start_ts=ts,
+                call_id=call_id,
+                parent_node_id=parent.node_id,
+            )
+            _attach_execution_graph_node(node, roots, by_id, parent)
+            active[call_id] = node
+            call_nodes[call_id] = node
+        elif kind in {"agent.end", "agent.error"}:
+            call_id = str(evt.get("call_id") or "")
+            if call_id in workflow_call_nodes:
+                status, reason = _agent_terminal_status_and_reason(kind, payload)
+                _finish_current_ac_round(current_round, call_id, ts, status=status, reason=reason)
+            node = active.get(call_id)
+            if node is None:
+                continue
+            _apply_agent_terminal_event_to_execution_graph_node(node, kind, payload, ts)
+            parent_node = by_id.get(node.parent_node_id)
+            if _is_ac_figure_block(parent_node):
+                _mark_ac_figure_block_finished(parent_node, node, ts)
+
+
+def _ac_milestone_node(
+    kind: str,
+    payload: dict[str, Any],
+    ts: str | None,
+    workflow_node: ExecutionGraphNode,
+    round_node: ExecutionGraphNode | None,
+    roots: list[ExecutionGraphNode],
+    by_id: dict[str, ExecutionGraphNode],
+) -> ExecutionGraphNode | None:
+    labels = {
+        "ac.resume": "Resume checkpoint",
+        "ac.resume_noop": "Resume complete",
+        "ac.resume_missing_review_start": "Resume missing review",
+        "ac.terminal_auxiliary_suppressed": "Terminal auxiliary suppressed",
+        "ac.early_stop_deferred_for_compute": "Early stop deferred for compute",
+        "ac.early_stop_deferred_for_terminal_auxiliary": "Early stop deferred",
+        "ac.forced_fresh_review": "Forced-fresh critic",
+        "ac.early_stop_agreed": "Early stop agreed",
+        "ac.deterministic_gate_blocked": "Deterministic gate blocked",
+        "ac.final_compile": "Final compile",
+        "ac.final_critic_review": "Final critic",
+        "ac.final_critic_skipped": "Final critic skipped",
+        "ac.final_critic_failed": "Final critic failed",
+        "ac.last_gasp": "Last-gasp recovery",
+    }
+    label = labels.get(kind)
+    if label is None:
+        return None
+    parent = round_node if kind not in {"ac.final_compile", "ac.final_critic_review", "ac.final_critic_skipped", "ac.final_critic_failed", "ac.last_gasp", "ac.resume", "ac.resume_noop"} and round_node is not None else workflow_node
+    status = "ok"
+    if kind in {"ac.final_critic_skipped"}:
+        status = "skipped"
+    if kind in {"ac.final_critic_failed", "ac.last_gasp"}:
+        status = "error"
+    reason = _ac_milestone_reason(kind, payload)
+    node = ExecutionGraphNode(
+        node_id=_unique_runtime_node_id(kind.replace(".", "_"), by_id, parent_id=parent.node_id),
+        raw_id=kind.replace(".", "_"),
+        label=label,
+        kind="ac_event",
+        status=status,
+        start_ts=ts,
+        end_ts=ts,
+        duration_s=0.0 if ts else None,
+        reason=reason,
+        parent_node_id=parent.node_id,
+    )
+    _attach_execution_graph_node(node, roots, by_id, parent)
+    return node
+
+
+def _ac_milestone_reason(kind: str, payload: dict[str, Any]) -> str:
+    if kind == "ac.final_compile":
+        if "pages" in payload:
+            return f"pages: {payload.get('pages')} / {payload.get('page_limit')}"
+        return ""
+    if kind == "ac.last_gasp":
+        return str(payload.get("msg") or payload.get("type") or "Workflow recovered after an error")
+    if kind == "ac.final_critic_failed":
+        return str(payload.get("msg") or payload.get("type") or "Final critic failed")
+    if kind == "ac.final_critic_skipped":
+        return str(payload.get("reason") or "Skipped")
+    if kind == "ac.deterministic_gate_blocked":
+        reasons = payload.get("reasons")
+        if isinstance(reasons, list):
+            return ", ".join(str(item) for item in reasons)
+    return ""
+
+
+_AC_FIGURE_NODE_IDS = {
+    "author",
+    "stateful_critic",
+    "fresh_critic",
+    "llm_council",
+    "compute_node",
+}
+
+
+def _ac_figure_parent(
+    evt: dict[str, Any],
+    by_id: dict[str, ExecutionGraphNode],
+) -> ExecutionGraphNode | None:
+    raw = str(evt.get("agent") or evt.get("agent_path") or "").rsplit(".", 1)[-1]
+    node_id = ""
+    if raw == "Author":
+        node_id = "author"
+    elif raw == "ACCritic":
+        payload = evt.get("payload") if isinstance(evt.get("payload"), dict) else {}
+        call_input = payload.get("input") if isinstance(payload, dict) else {}
+        if not isinstance(call_input, dict):
+            call_input = {}
+        mode = str(call_input.get("mode") or "").lower()
+        omit_thinking = bool(call_input.get("omit_author_thinking"))
+        node_id = "fresh_critic" if mode == "fresh" or omit_thinking else "stateful_critic"
+    elif raw == "Council":
+        node_id = "llm_council"
+    elif raw == "Compute":
+        node_id = "compute_node"
+    if not node_id:
+        return None
+    return by_id.get(node_id)
+
+
+def _is_ac_figure_block(node: ExecutionGraphNode | None) -> bool:
+    return node is not None and node.raw_id in _AC_FIGURE_NODE_IDS
+
+
+def _mark_ac_figure_block_started(node: ExecutionGraphNode, ts: str | None) -> None:
+    node.status = "running"
+    node.start_ts = node.start_ts or ts
+    node.end_ts = None
+    node.duration_s = None
+    node.reason = ""
+
+
+def _mark_ac_figure_block_finished(
+    parent: ExecutionGraphNode,
+    child: ExecutionGraphNode,
+    ts: str | None,
+) -> None:
+    parent.end_ts = ts
+    parent.duration_s = _duration(parent.start_ts, parent.end_ts)
+    if child.status == "error":
+        parent.status = "error"
+        parent.reason = child.reason
+        return
+    if any(item.status == "running" for item in parent.children):
+        parent.status = "running"
+        return
+    if not any(item.status == "error" for item in parent.children):
+        parent.status = "ok"
+
+
+def _finish_current_ac_round(
+    current_round: dict[str, ExecutionGraphNode],
+    parent_id: str,
+    ts: str | None,
+    *,
+    status: str,
+    reason: str = "",
+) -> None:
+    round_node = current_round.get(parent_id)
+    if round_node is None or round_node.status != "running":
+        return
+    round_node.status = status
+    round_node.end_ts = ts
+    round_node.duration_s = _duration(round_node.start_ts, round_node.end_ts)
+    if status == "error":
+        round_node.reason = reason or "Agent failed"
+
+
+def _nested_agent_raw_id(evt: dict[str, Any]) -> str:
+    agent = str(evt.get("agent") or evt.get("agent_path") or "agent")
+    return _clean_runtime_node_id(agent.rsplit(".", 1)[-1])
+
+
+def _nested_agent_node_id(evt: dict[str, Any]) -> str:
+    call_id = str(evt.get("call_id") or "")
+    return f"{_nested_agent_raw_id(evt)}_{call_id}" if call_id else _nested_agent_raw_id(evt)
+
+
+def _nested_agent_label(evt: dict[str, Any]) -> str:
+    raw = str(evt.get("agent") or evt.get("agent_path") or "Agent").rsplit(".", 1)[-1]
+    labels = {
+        "ACCritic": "Critic",
+        "Author": "Author",
+        "Council": "Council",
+        "Compute": "Compute Worker",
+    }
+    return labels.get(raw, _humanize_id(raw))
 
 
 def _read_jsonl_events(path: Path) -> list[dict[str, Any]]:
@@ -1480,6 +1901,33 @@ def _drop_active_node(active: list[ExecutionGraphNode], node: ExecutionGraphNode
         pass
 
 
+def _agent_terminal_status_and_reason(kind: str, payload: dict[str, Any]) -> tuple[str, str]:
+    if kind == "agent.error":
+        return "error", str(payload.get("msg") or payload.get("type") or "Agent failed")
+    output = payload.get("output") if isinstance(payload, dict) else None
+    if _call_status_from_output(output) == "error":
+        err = _call_error_from_output(output)
+        return "error", str(err.get("msg") or err.get("type") or "Node output reported an error")
+    return "ok", ""
+
+
+def _apply_agent_terminal_event_to_execution_graph_node(
+    node: ExecutionGraphNode,
+    kind: str,
+    payload: dict[str, Any],
+    ts: str | None,
+) -> None:
+    node.end_ts = ts
+    node.duration_s = _duration(node.start_ts, node.end_ts)
+    status, reason = _agent_terminal_status_and_reason(kind, payload)
+    if status == "error":
+        node.status = "error"
+        node.reason = reason
+        return
+    if node.status != "error":
+        node.status = "ok"
+
+
 def _call_error_message(call: CallNode) -> str:
     if isinstance(call.error, dict):
         msg = str(call.error.get("msg") or "").strip()
@@ -1767,24 +2215,19 @@ def validate_preset_yaml(raw_yaml: str) -> dict[str, Any]:
 def _preset_validation_errors(raw: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     workflow_path = raw.get("workflow")
-    workflow_cls: type | None = None
+    workflow_cls = _workflow_cls_from_raw(raw)
     if not isinstance(workflow_path, str) or not workflow_path:
         errors.append("missing or non-string 'workflow' key")
     elif "." not in workflow_path:
         errors.append(f"workflow path must be dotted: {workflow_path!r}")
-    else:
+    elif workflow_cls is None:
         try:
             module_name, _, class_name = workflow_path.rpartition(".")
-            workflow_cls = getattr(importlib.import_module(module_name), class_name)
+            cls = getattr(importlib.import_module(module_name), class_name)
             from proofstack.agent import Agent
 
-            if not issubclass(workflow_cls, Agent):
+            if not issubclass(cls, Agent):
                 errors.append(f"'workflow' {workflow_path} is not an Agent subclass")
-            else:
-                from proofstack.agents.dag_workflow import DAGWorkflow
-
-                if not issubclass(workflow_cls, DAGWorkflow):
-                    errors.append("visual workflow presets must use DAGWorkflow")
         except Exception as e:
             errors.append(f"cannot import workflow {workflow_path!r}: {e}")
 
@@ -1813,16 +2256,38 @@ def _preset_validation_errors(raw: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _workflow_qualname_from_raw(raw: dict[str, Any]) -> str | None:
+def _workflow_cls_from_raw(raw: dict[str, Any]) -> type | None:
     workflow_path = raw.get("workflow")
     if not isinstance(workflow_path, str) or "." not in workflow_path:
         return None
     try:
         module_name, _, class_name = workflow_path.rpartition(".")
         cls = getattr(importlib.import_module(module_name), class_name)
-        return str(getattr(cls, "__qualname__", "") or class_name)
+        from proofstack.agent import Agent
+
+        if not issubclass(cls, Agent):
+            return None
+        return cls
     except Exception:
         return None
+
+
+def _is_dag_workflow_cls(cls: type | None) -> bool:
+    if cls is None:
+        return False
+    try:
+        from proofstack.agents.dag_workflow import DAGWorkflow
+
+        return issubclass(cls, DAGWorkflow)
+    except Exception:
+        return False
+
+
+def _workflow_qualname_from_raw(raw: dict[str, Any]) -> str | None:
+    cls = _workflow_cls_from_raw(raw)
+    if cls is not None:
+        return str(getattr(cls, "__qualname__", "") or cls.__name__)
+    return None
 
 
 def _dag_report_from_raw(raw: dict[str, Any], workflow_qualname: str | None = None) -> DAGReport:
@@ -1833,6 +2298,7 @@ def _dag_report_from_raw(raw: dict[str, Any], workflow_qualname: str | None = No
     if dag is None:
         workflow_cfg = _workflow_component_config(raw, components, workflow_qualname)
         dag = workflow_cfg.get("dag") if isinstance(workflow_cfg, dict) else None
+    workflow_cls = _workflow_cls_from_raw(raw)
     workflow_inputs = raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {}
     workflow_budget = raw.get("budget") if isinstance(raw.get("budget"), dict) else {}
     workflow_inputs = {
@@ -1840,6 +2306,21 @@ def _dag_report_from_raw(raw: dict[str, Any], workflow_qualname: str | None = No
         for key, value in workflow_inputs.items()
         if key not in workflow_budget
     }
+    if dag is None and workflow_cls is not None and not _is_dag_workflow_cls(workflow_cls):
+        return DAGReport(
+            ok=True,
+            errors=[],
+            nodes=[],
+            edges=[],
+            warnings=[
+                f"{workflow_cls.__qualname__} is a custom workflow, so the visual DAG editor is unavailable. Edit the YAML directly."
+            ],
+            workflow_inputs=dict(workflow_inputs),
+            workflow_input_schema=_workflow_input_schema(raw),
+            workflow_budget=dict(workflow_budget),
+            workflow_outputs={},
+            workflow_output_ui={},
+        )
     workflow_outputs = dag.get("outputs") if isinstance(dag, dict) and isinstance(dag.get("outputs"), dict) else {}
     dag_ui = dag.get("ui") if isinstance(dag, dict) and isinstance(dag.get("ui"), dict) else {}
     workflow_output_ui = (
@@ -2378,6 +2859,11 @@ def _op_add_node(raw: dict[str, Any], operation: dict[str, Any]) -> None:
     dag = _editable_dag(raw)
     nodes = dag["nodes"]
     template = str(operation.get("template") or "prompt_agent")
+    if template in REMOVED_NODE_TEMPLATES:
+        raise PresetError(
+            f"The {template!r} add-node template has been removed. "
+            "Use Parallel Solve / Verify / Improve or a Basic I/O Agent instead."
+        )
     default_base_id = operation.get("preset") if template == "workflow_ref" else ""
     if template == "python_agent":
         default_base_id = str(operation.get("node_id") or _agent_base_id(str(operation.get("agent") or "")))
@@ -2397,65 +2883,6 @@ def _op_add_node(raw: dict[str, Any], operation: dict[str, Any]) -> None:
             "agent": CONFIGURABLE_CLI_AGENT,
             "name": component,
             "inputs": {"tex_body": ""},
-            "ui": ui,
-        }
-    elif template == "join":
-        component = _ensure_prompt_component(raw, node_id, "merger")
-        node = {
-            "id": node_id,
-            "kind": "agent",
-            "agent": CONFIGURABLE_PROMPT_AGENT,
-            "name": component,
-            "inputs": {
-                "problem": "$input.problem",
-                "solutions_text": "",
-            },
-            "best_tex": "$output.solution",
-            "ui": ui,
-        }
-    elif template == "map_chain":
-        _ensure_prompt_component(raw, "solver", "solver")
-        _ensure_prompt_component(raw, "validator", "validator")
-        _ensure_prompt_component(raw, "improver", "improver")
-        node = {
-            "id": node_id,
-            "kind": "map_chain",
-            "foreach": [],
-            "foreach_default": [None],
-            "max_parallel": 4,
-            "collect": {
-                "draft": "$step.solver.solution",
-                "final": {"coalesce": ["$step.improver.solution", "$step.solver.solution"]},
-            },
-            "steps": [
-                {
-                    "id": "solver",
-                    "agent": CONFIGURABLE_PROMPT_AGENT,
-                    "name": "cfg_solver",
-                    "on_error": "skip_item",
-                    "retries": 1,
-                    "inputs": {"problem": "$input.problem", "approach": "$item"},
-                },
-                {
-                    "id": "validator",
-                    "agent": CONFIGURABLE_PROMPT_AGENT,
-                    "name": "cfg_validator",
-                    "default": {"findings": []},
-                    "inputs": {"problem": "$input.problem", "solution": "$step.solver.solution"},
-                },
-                {
-                    "id": "improver",
-                    "agent": CONFIGURABLE_PROMPT_AGENT,
-                    "name": "cfg_improver",
-                    "when": {"ref": "$step.validator.findings", "any_verdict": ["gap", "wrong"]},
-                    "default": {},
-                    "inputs": {
-                        "problem": "$input.problem",
-                        "previous_solution": "$step.solver.solution",
-                        "bug_report": {"bug_report_from_findings": "$step.validator.findings"},
-                    },
-                },
-            ],
             "ui": ui,
         }
     elif template == "if_else":
@@ -2561,9 +2988,6 @@ def _op_add_node(raw: dict[str, Any], operation: dict[str, Any]) -> None:
             "inputs": _default_prompt_inputs(template),
             "ui": ui,
         }
-        if template == "solver":
-            node["best_tex"] = "$output.solution"
-
     nodes.append(node)
 
 
@@ -3190,7 +3614,10 @@ def _op_untie_component(raw: dict[str, Any], operation: dict[str, Any]) -> None:
 
 
 def _op_update_node(raw: dict[str, Any], operation: dict[str, Any]) -> None:
-    node = _node_by_id(raw, str(operation.get("node_id") or ""))
+    target_ref = _editor_node_ref(raw, str(operation.get("node_id") or ""))
+    node = target_ref.node
+    if node is None:
+        raise PresetError("node not found")
     fields = operation.get("fields") or {}
     if not isinstance(fields, dict):
         raise PresetError("update_node.fields must be a mapping")
@@ -3198,6 +3625,8 @@ def _op_update_node(raw: dict[str, Any], operation: dict[str, Any]) -> None:
     old_id = str(node["id"])
     new_id = fields.get("id")
     if isinstance(new_id, str) and new_id and new_id != old_id:
+        if target_ref.kind != "top":
+            raise PresetError("renaming repeat body node ids is not supported")
         clean = _clean_id(new_id)
         if clean != old_id and any(
             isinstance(n, dict) and n.get("id") == clean
@@ -4677,53 +5106,6 @@ def _prompt_component_template(template: str) -> dict[str, Any]:
             "input_schema": {"problem": "string", "n": "integer"},
             "output": {"xml_lists": {"approaches": "approach"}, "default_field": "text"},
         }
-    if template == "validator":
-        return {
-            "model": "models/openai/gpt-54-mini",
-            "system_prompt": (
-                "You are a line-by-line mathematical referee. Return a JSON array of "
-                "findings inside <findings>...</findings>."
-            ),
-            "user_prompt": "Problem:\n{problem}\n\nCandidate proof:\n{solution}\n\nReturn the findings.",
-            "input_schema": {"problem": "string", "solution": "string"},
-            "output": {"xml_tags": ["findings"], "default_field": "text"},
-        }
-    if template == "improver":
-        return {
-            "model": "models/openai/gpt-54-mini",
-            "system_prompt": (
-                "You are an expert mathematician revising a proof. Return a complete, "
-                "standalone corrected LaTeX proof body inside <solution>...</solution>."
-            ),
-            "user_prompt": (
-                "Problem:\n{problem}\n\nPrevious solution:\n{previous_solution}\n\n"
-                "Bug report:\n{bug_report}\n\nFix every substantive issue."
-            ),
-            "input_schema": {"problem": "string", "previous_solution": "string", "bug_report": "string"},
-            "output": {"xml_tags": ["solution"], "default_field": "solution"},
-        }
-    if template == "merger":
-        return {
-            "model": "models/openai/gpt-54-mini",
-            "system_prompt": (
-                "You are an expert mathematician merging candidate proofs into a single "
-                "rigorous standalone proof. Emit only a LaTeX body inside <solution>...</solution>."
-            ),
-            "user_prompt": "Problem:\n{problem}\n\nCandidate proofs:\n{solutions_text}\n\nMerge them.",
-            "input_schema": {"problem": "string", "solutions_text": "string"},
-            "output": {"xml_tags": ["solution"], "default_field": "solution"},
-        }
-    if template == "solver":
-        return {
-            "model": "models/openai/gpt-54-mini",
-            "system_prompt": (
-                "You are an expert research mathematician. Produce a rigorous, "
-                "self-contained proof. Emit only a LaTeX body inside <solution>...</solution>."
-            ),
-            "user_prompt": "Problem:\n\n{problem}\n\nSuggested approach:\n{approach}\n\nWrite the proof.",
-            "input_schema": {"problem": "string", "approach": "string"},
-            "output": {"xml_tags": ["solution"], "default_field": "solution"},
-        }
     if template == "budget_fallback":
         return {
             "model": "models/openai/gpt-54-mini",
@@ -4781,14 +5163,6 @@ def _default_prompt_inputs(template: str) -> dict[str, Any]:
         return {}
     if template == "ideator":
         return {"problem": "$input.problem", "n": {"coalesce": ["$input.n_approaches", 2]}}
-    if template == "solver":
-        return {"problem": "$input.problem", "approach": ""}
-    if template == "validator":
-        return {"problem": "$input.problem", "solution": ""}
-    if template == "improver":
-        return {"problem": "$input.problem", "previous_solution": "", "bug_report": ""}
-    if template == "merger":
-        return {"problem": "$input.problem", "solutions_text": ""}
     return {"problem": "$input.problem"}
 
 
@@ -4801,8 +5175,6 @@ def _template_base_id(template: str) -> str:
         "workflow_ref": "subworkflow",
         "cli_agent": "cli",
         "latex": "latex",
-        "join": "merged",
-        "map_chain": "branches",
     }.get(template, template)
 
 
@@ -4810,13 +5182,7 @@ def _template_label(template: str, node_id: str) -> str:
     return {
         "prompt_agent": "Basic I/O Agent",
         "ideator": "Ideator",
-        "solver": "Solver",
-        "validator": "Validator",
-        "improver": "Improver",
-        "merger": "Merger",
-        "join": "Merge",
         "latex": "LaTeX",
-        "map_chain": "Parallel Branches",
         "if_else": "If / Else",
         "budget_fallback": "Budget Fallback",
         "repeat": "Repeat",
@@ -5165,6 +5531,7 @@ __all__ = [
     "find_tool_definition",
     "load_call_detail",
     "load_event_tree",
+    "load_monitor_summaries",
     "load_execution_graph",
     "mutate_preset_yaml",
     "normalize_preset_name",

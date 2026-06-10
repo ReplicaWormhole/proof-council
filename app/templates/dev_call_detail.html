@@ -1,7 +1,7 @@
 {% extends "dev_base.html" %}
 {% import "dev_macros.html" as ui %}
 {% set active_tab = 'runs' %}
-{% block title %}{{ node.display_name }} — {{ run.display_name }} — ProofStack{% endblock %}
+{% block title %}{{ node.display_name }} — {{ run.display_name }} — ProofCouncil{% endblock %}
 
 {% macro render_payload(payload) %}
     {% if payload is mapping and payload.get("$ref") %}
@@ -41,17 +41,26 @@
         {% if rendered.error %}
             <p class="dim" style="color:#991b1b">{{ rendered.error }}</p>
         {% endif %}
-        {% if rendered.system %}
-            <details class="message-block message-system">
-                <summary>system / developer</summary>
-                <div class="rendered-text">{{ rendered.system }}</div>
-            </details>
-        {% endif %}
-        {% if rendered.user %}
-            <details class="message-block message-user">
-                <summary>user</summary>
-                <div class="rendered-text">{{ rendered.user }}</div>
-            </details>
+        {% if rendered.turns %}
+            {% for message in rendered.turns %}
+                <details class="message-block message-{{ message.role }}">
+                    <summary>{{ message.label }}</summary>
+                    <div class="rendered-text">{{ message.text }}</div>
+                </details>
+            {% endfor %}
+        {% else %}
+            {% if rendered.system %}
+                <details class="message-block message-system">
+                    <summary>system / developer</summary>
+                    <div class="rendered-text">{{ rendered.system }}</div>
+                </details>
+            {% endif %}
+            {% if rendered.user %}
+                <details class="message-block message-user">
+                    <summary>user</summary>
+                    <div class="rendered-text">{{ rendered.user }}</div>
+                </details>
+            {% endif %}
         {% endif %}
     {% endif %}
 

@@ -5,30 +5,22 @@ set -euo pipefail
 # smoke/input.json inside it. Mirrors how First Proof's run.sh wires
 # /data/input and /data/output on the EC2 instance.
 #
-# Usage: ./smoke/run_container.sh [fast|full]
+# Usage: ./smoke/run_container.sh
 
-VARIANT="${1:-fast}"
-case "$VARIANT" in
-    fast)
-        WORKFLOW="firstproof_smoke_fast"
-        VARIANT_BUDGET_USD=5
-        ;;
-    full)
-        WORKFLOW="firstproof_smoke_full"
-        VARIANT_BUDGET_USD=15
-        ;;
-    *)
-        echo "Usage: $0 [fast|full]" >&2
-        exit 2
-        ;;
-esac
+if [[ "${1:-}" != "" && "${1:-}" != "fast" ]]; then
+    echo "Usage: $0" >&2
+    exit 2
+fi
+
+WORKFLOW="firstproof_smoke_fast"
+VARIANT_BUDGET_USD=5
 
 SMOKE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SMOKE_DIR/.." && pwd)"
 SECRETS="$SMOKE_DIR/secrets.env"
 INPUT="$SMOKE_DIR/input.json"
 OUTPUT="$SMOKE_DIR/output_container"
-IMAGE_TAG="${IMAGE_TAG:-mathagents-smoke:latest}"
+IMAGE_TAG="${IMAGE_TAG:-proofcouncil-smoke:latest}"
 
 if [[ ! -f "$SECRETS" ]]; then
     echo "ERROR: $SECRETS not found." >&2
@@ -42,14 +34,14 @@ rm -f "$OUTPUT"/*.tex "$OUTPUT"/solutions.json \
 rm -rf "$OUTPUT"/logs "$OUTPUT"/workflow_runs
 
 # Build a temporary env-file that combines the user's secrets.env with
-# the smoke-variant defaults. Docker's ``--env-file`` is last-wins, so
+# the smoke defaults. Docker's ``--env-file`` is last-wins, so
 # blindly appending after the secrets.env copy would silently *shadow*
 # any FIRSTPROOF_* override the user explicitly set in secrets.env
 # (e.g. ``FIRSTPROOF_BUDGET_USD_PER_QUESTION=2.0``). Instead, only
 # append a default when the same key isn't already present in
-# secrets.env. Two settings are always-force because they're variant-
-# specific or required by the harness: FIRSTPROOF_WORKFLOW (selected
-# by the script's positional arg) and PROOFSTACK_SANDBOX_BACKEND
+# secrets.env. Three settings are always-force because they are required
+# by the public smoke path: FIRSTPROOF_WORKFLOW, FIRSTPROOF_HEALTHCHECK,
+# and PROOFSTACK_SANDBOX_BACKEND
 # (must be subprocess inside the container — no docker-in-docker).
 TMP_ENV="$(mktemp)"
 TMP_ENV_FILTERED="$(mktemp)"
@@ -58,7 +50,7 @@ cp "$SECRETS" "$TMP_ENV"
 
 # Strip any always-force keys the user happened to also set in
 # secrets.env so we don't double-define them on the last-wins file.
-awk '!/^(FIRSTPROOF_WORKFLOW|PROOFSTACK_SANDBOX_BACKEND)=/' "$TMP_ENV" > "$TMP_ENV_FILTERED"
+awk '!/^(FIRSTPROOF_WORKFLOW|FIRSTPROOF_HEALTHCHECK|PROOFSTACK_SANDBOX_BACKEND)=/' "$TMP_ENV" > "$TMP_ENV_FILTERED"
 mv "$TMP_ENV_FILTERED" "$TMP_ENV"
 
 # Append a default only when the key is *not* already present in
@@ -73,14 +65,14 @@ _append_if_missing() {
 
 {
     echo
-    # Always-force: variant-specific / required by the harness.
+    # Always-force: required by the public smoke path.
     echo "FIRSTPROOF_WORKFLOW=$WORKFLOW"
+    echo "FIRSTPROOF_HEALTHCHECK=off"
     echo "PROOFSTACK_SANDBOX_BACKEND=subprocess"
     # User-overridable defaults. The entrypoint forwards n_rounds +
     # page_limit + budget to every workflow subprocess, so without
     # these set the production defaults (10 / 12 / 1000) would override
     # the smoke preset's cheap values.
-    _append_if_missing FIRSTPROOF_HEALTHCHECK "${FIRSTPROOF_HEALTHCHECK:-off}"
     _append_if_missing FIRSTPROOF_MAX_PARALLEL "${FIRSTPROOF_MAX_PARALLEL:-6}"
     _append_if_missing FIRSTPROOF_N_ROUNDS "${FIRSTPROOF_N_ROUNDS:-2}"
     _append_if_missing FIRSTPROOF_PAGE_LIMIT "${FIRSTPROOF_PAGE_LIMIT:-8}"

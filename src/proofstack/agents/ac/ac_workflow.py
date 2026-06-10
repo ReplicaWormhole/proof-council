@@ -76,7 +76,7 @@ from proofstack.agents.ac.council import (
     render_council_replies_for_author,
 )
 from proofstack.agents.ac.critic import ACCritic
-from proofstack.agents.dag_workflow import _bare_wrap
+from proofstack.agents.dag_workflow import DAGWorkflow, _bare_wrap
 from proofstack.agents.pwc.workspace import embed_or_ship_bibliography
 from proofstack.budget import BudgetExhausted
 from proofstack.latex_contract import (
@@ -395,8 +395,8 @@ class ACWorkflow(Agent):
         # ``Compute.Inputs.sandbox_backend``.
         compute_sandbox_backend: str = "docker"
         compute_docker_image: str = "proofstack-pwc-sandbox:latest"
-        # Codex sandbox flag: ``auto`` | ``full-auto`` | ``workspace-write``
-        # | ``docker-bypass`` | ``none``. ``auto`` resolves correctly
+        # Codex sandbox flag: ``auto`` | ``workspace-write`` |
+        # ``docker-bypass`` | ``none``. ``auto`` resolves correctly
         # based on the backend.
         compute_codex_sandbox: str = "auto"
         # Dev-only post-loop audit. False by default: competition runs
@@ -2507,4 +2507,76 @@ def _sum_logged_model_cost(events_path: Path) -> float:
     return total
 
 
-__all__ = ["ACWorkflow"]
+
+class ACDAGWorkflow(DAGWorkflow):
+    description: ClassVar[str] = ACWorkflow.description
+    execution_mode: ClassVar[str] = "workflow"
+    cache_enabled: ClassVar[bool] = False
+
+    Inputs = ACWorkflow.Inputs
+    Outputs = ACWorkflow.Outputs
+
+    async def _last_gasp(self, inp, state: dict[str, Any], error: Exception):
+        helper = ACWorkflow(self.ctx, name="ac_last_gasp")
+        ac_state = _ac_visual_state_from_dag_state(state)
+        workspace = (
+            Path(str(ac_state.get("workspace")))
+            if ac_state.get("workspace")
+            else helper._workspace_path(inp.problem_id, inp.problem)
+        )
+        await self.events.emit(
+            "ac.last_gasp",
+            {
+                "type": type(error).__name__,
+                "msg": str(error),
+                "rounds_completed": max(int(ac_state.get("last_round_run", 0) or 0), 0),
+            },
+        )
+        tex_text = _safe_read(workspace / "answer.tex")
+        wrapped = await helper._last_gasp_finalize(
+            inp.problem, tex_text, error=error, workspace=workspace
+        )
+        ws_bbl = workspace / "answer.bbl"
+        ws_bib = workspace / "references.bib"
+        answer_path = helper._stash_answer(
+            inp.problem_id,
+            wrapped,
+            bbl_path=ws_bbl if ws_bbl.exists() else None,
+            bib_path=ws_bib if ws_bib.exists() else None,
+            ship_bib_alongside=bool(getattr(inp, "ship_bib_alongside", False)),
+        )
+        return self.Outputs(
+            problem_id=inp.problem_id,
+            answer_tex=answer_path,
+            research_notes_tex=workspace / "research_notes.tex",
+            references_bib=workspace / "references.bib",
+            compiled=False,
+            pages=0,
+            rounds_completed=max(int(ac_state.get("last_round_run", 0) or 0), 0),
+            early_stopped=False,
+            last_critic_accepted=None,
+            final_critic_answer_ready=False,
+            final_critic_mode_run="not_run",
+            final_critic_review_md="",
+            last_gasp=True,
+            error=f"{type(error).__name__}: {error}",
+        )
+
+
+def _ac_visual_state_from_dag_state(state: dict[str, Any]) -> dict[str, Any]:
+    node = state.get("node") if isinstance(state, dict) else {}
+    if isinstance(node, dict):
+        loop = node.get("author_critic_loop")
+        if hasattr(loop, "state") and isinstance(loop.state, dict):
+            return loop.state
+        if isinstance(loop, dict) and isinstance(loop.get("state"), dict):
+            return loop["state"]
+        problem = node.get("problem")
+        if hasattr(problem, "state") and isinstance(problem.state, dict):
+            return problem.state
+        if isinstance(problem, dict) and isinstance(problem.get("state"), dict):
+            return problem["state"]
+    return {}
+
+
+__all__ = ["ACWorkflow", "ACDAGWorkflow"]

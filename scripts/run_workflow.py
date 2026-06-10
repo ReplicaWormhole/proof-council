@@ -2,10 +2,10 @@
 
 Usage::
 
-    uv run python scripts/run_workflow.py --workflow jaunty_proof \
-        --problem problems/irrationality_sqrt2.txt
+    uv run python scripts/run_workflow.py --workflow author_critic \
+        --problem problems/example.txt
 
-    uv run python scripts/run_workflow.py --workflow nimble_proof \
+    uv run python scripts/run_workflow.py --workflow firstproof_smoke_fast \
         --problem-text "Prove that sqrt(2) is irrational." \
         --problem-id sqrt2_ad_hoc
 
@@ -37,15 +37,16 @@ from _env import load_dotenv_file  # noqa: E402
 load_dotenv_file(REPO_ROOT / ".env")
 
 from proofstack import BudgetSpec, RunContext  # noqa: E402
+from proofstack.monitor import DEFAULT_MONITOR_MODEL, RunMonitor  # noqa: E402
 from proofstack.registry import load_preset  # noqa: E402
 
 
 def _argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Run a proofstack workflow preset on one problem.")
+    p = argparse.ArgumentParser(description="Run a ProofCouncil workflow preset on one problem.")
     p.add_argument(
         "--workflow",
         required=True,
-        help="DAG preset name under configs/workflows/ (e.g. 'jaunty_proof') or an explicit .yaml path.",
+        help="DAG preset name under configs/workflows/ (e.g. 'author_critic') or an explicit .yaml path.",
     )
     src = p.add_mutually_exclusive_group()
     src.add_argument("--problem", type=Path, help="Path to a text file containing the problem statement.")
@@ -103,6 +104,12 @@ def _argparser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Override the preset's max_usd budget.",
+    )
+    p.add_argument("--monitor", action="store_true", help="Enable live LLM monitor summaries.")
+    p.add_argument(
+        "--monitor-model",
+        default=str(DEFAULT_MONITOR_MODEL),
+        help="Model config used by --monitor.",
     )
     return p
 
@@ -402,6 +409,10 @@ async def amain() -> int:
             "cli_model_overrides": cli_model_overrides,
             "cli_component_overrides": cli_component_overrides,
             "component_configs": merged_component_configs,
+            "monitor": {
+                "enabled": bool(args.monitor),
+                "model": args.monitor_model if args.monitor else None,
+            },
         },
     )
 
@@ -410,6 +421,14 @@ async def amain() -> int:
         problem_id=problem_id,
         cli_overrides=cli_inputs,
     )
+    if args.monitor:
+        ctx.monitor = RunMonitor(
+            ctx,
+            model=args.monitor_model,
+            problem=str(built_inputs.get("problem") or problem_text or ""),
+            problem_id=str(built_inputs.get("problem_id") or problem_id or ""),
+            workflow_structure=_workflow_structure_for_monitor(preset.raw),
+        )
 
     wf_cls = preset.workflow_cls
     # Keep the default name (== class name) so model_overrides keyed by
@@ -436,12 +455,16 @@ async def amain() -> int:
             "run.end",
             {"status": "error", "type": type(e).__name__, "msg": str(e)},
         )
+        await _drain_monitor(ctx)
         ctx.write_metadata(
-            {
-                "status": "error",
-                "display_name": args.run_name,
-                "error": f"{type(e).__name__}: {e}",
-            }
+            _run_metadata(
+                ctx,
+                {
+                    "status": "error",
+                    "display_name": args.run_name,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
         )
         print(f"workflow failed: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
@@ -450,7 +473,13 @@ async def amain() -> int:
 
     status = "error" if isinstance(out_json, dict) and out_json.get("error") else "ok"
     await ctx.events.emit("run.end", {"status": status})
-    ctx.write_metadata({"status": status, "display_name": args.run_name, "outputs": out_json})
+    await _drain_monitor(ctx)
+    ctx.write_metadata(
+        _run_metadata(
+            ctx,
+            {"status": status, "display_name": args.run_name, "outputs": out_json},
+        )
+    )
 
     print(f"run_id: {run_id}")
     print(f"output: {ctx.root_workdir}")
@@ -459,8 +488,53 @@ async def amain() -> int:
     return 0
 
 
+async def _drain_monitor(ctx: RunContext) -> None:
+    monitor = getattr(ctx, "monitor", None)
+    drain = getattr(monitor, "drain", None)
+    if not callable(drain):
+        return
+    try:
+        await drain()
+    except Exception:
+        pass
+
+
+def _run_metadata(ctx: RunContext, extra: dict[str, Any]) -> dict[str, Any]:
+    out = dict(extra)
+    monitor = ctx.config_snapshot.get("monitor")
+    if isinstance(monitor, dict):
+        out["monitor"] = monitor
+    return out
+
+
 def main() -> int:
     return asyncio.run(amain())
+
+
+def _workflow_structure_for_monitor(raw: dict[str, Any]) -> dict[str, Any]:
+    dag = raw.get("dag") if isinstance(raw.get("dag"), dict) else {}
+    nodes = []
+    for node in dag.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        ui = node.get("ui") if isinstance(node.get("ui"), dict) else {}
+        nodes.append(
+            {
+                "id": node.get("id"),
+                "label": ui.get("label") or node.get("id"),
+                "kind": node.get("kind", "agent"),
+                "agent": node.get("agent") or node.get("preset"),
+                "component": node.get("name"),
+                "needs": node.get("needs") or [],
+            }
+        )
+    outputs = dag.get("outputs") if isinstance(dag.get("outputs"), dict) else {}
+    return {
+        "workflow": raw.get("workflow"),
+        "description": raw.get("description", ""),
+        "nodes": nodes,
+        "outputs": list(outputs),
+    }
 
 
 def _budget_with_input_overrides(

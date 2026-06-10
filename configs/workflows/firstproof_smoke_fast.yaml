@@ -3,9 +3,8 @@ description: >
   Cheap end-to-end smoke for the First Proof harness. Author and Critic
   run on gpt-5.4-mini--low; the Advisory Council fans out across three
   mini/sonnet/gemini models so the council code path is exercised but
-  costs stay tiny. The Compute Worker is disabled (the Codex CLI path
-  has its own slow startup; see firstproof_smoke_full for a smoke that
-  exercises it). 2 rounds, page_limit 8, $5 / 30 min ceiling per
+  costs stay tiny. The Compute Worker is disabled so the smoke stays
+  short and does not require the Codex CLI path. 2 rounds, page_limit 8, $5 / 30 min ceiling per
   problem — enough headroom that 8 fake problems run in well under 30
   min total at trivial cost.
 
