@@ -1368,6 +1368,44 @@ class DevDataMutationTests(unittest.TestCase):
             self.assertTrue(report["edges"])
             self.assertTrue(all(edge["status"] == "ok" for edge in report["edges"]))
 
+    def test_codex_author_critic_smoke_preset_is_codex_first_and_app_runnable(self) -> None:
+        raw_yaml = (ROOT / "configs" / "workflows" / "codex_author_critic_smoke.yaml").read_text(encoding="utf-8")
+
+        validation = validate_preset_yaml(raw_yaml)
+        route_report = preset_dag_report("codex_author_critic_smoke").to_dict()
+        preset_names = {preset.name: preset for preset in discover_presets()}
+        raw = yaml.safe_load(raw_yaml)
+
+        self.assertIn("codex_author_critic_smoke", preset_names)
+        self.assertEqual(preset_names["codex_author_critic_smoke"].label, "Codex Author Critic Smoke")
+        self.assertEqual(raw["components"]["Author"]["model"], "models/codex/gpt-55-high")
+        self.assertEqual(raw["components"]["Author"]["file_io_mode"], "codex_workspace")
+        self.assertNotIn("USE_CONTAINER_FILES", raw["components"]["Author"])
+        self.assertEqual(raw["components"]["ACCritic"]["model"], "models/codex/gpt-55-high")
+        self.assertEqual(raw["inputs"]["council_models"], ["models/codex/gpt-55-medium"] * 3)
+        self.assertEqual(raw["inputs"]["compute_model"], "gpt-5.5")
+        self.assertEqual(raw["inputs"]["compute_cost_config"], "models/codex/gpt-55-medium")
+        for report in (validation, route_report):
+            self.assertTrue(report["ok"], report["errors"])
+            self.assertEqual(report["errors"], [])
+            self.assertEqual([node["id"] for node in report["nodes"]], ["problem", "author_critic_loop", "return"])
+            body = report["nodes"][1]["config"]["body"]["nodes"]
+            self.assertEqual(
+                [node["id"] for node in body],
+                [
+                    "author",
+                    "stateful_critic",
+                    "llm_council",
+                    "compute_node",
+                    "fresh_critic",
+                    "review_join",
+                    "ready_gate",
+                    "compile_gate",
+                ],
+            )
+            self.assertTrue(report["edges"])
+            self.assertTrue(all(edge["status"] == "ok" for edge in report["edges"]))
+
     def test_repeat_internal_edges_are_mutable_from_visual_node_ids(self) -> None:
         raw_yaml = _mutate(
             REPEAT_FIXTURE,

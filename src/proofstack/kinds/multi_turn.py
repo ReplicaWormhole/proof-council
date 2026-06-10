@@ -5,7 +5,7 @@ plain callables. Each ``Agent`` is exposed to the model as a tool whose
 JSON schema is auto-derived from its ``Inputs.model_json_schema()`` and
 whose description is the agent's ``description``.
 
-Implementation: we lean on ``mathagents.APIClient``'s built-in tool
+Implementation: we lean on the configured client factory's built-in tool
 loop (``tools=...`` + ``max_tool_calls > 0``). Async sub-agents are
 bridged into the synchronous tool callbacks via
 ``asyncio.run_coroutine_threadsafe``, so context vars (parent call id,
@@ -147,9 +147,7 @@ class MultiTurnAgent(Agent):
         cfg["tools"] = tool_pairs
         cfg["max_tool_calls"] = self.MAX_STEPS
         cfg.update(self.extra_client_kwargs())
-        from mathagents import APIClient
-
-        return APIClient(**cfg)
+        return self.ctx.api_client_factory(cfg)
 
     def _build_tool_pairs(self, loop: asyncio.AbstractEventLoop) -> list[tuple]:
         pairs = []
@@ -176,10 +174,10 @@ class MultiTurnAgent(Agent):
 
 
 def _one_query(client, messages):
-    """Drain the single-result iterator returned by APIClient.run_queries."""
+    """Drain the single-result iterator returned by the client."""
     for tup in client.run_queries([messages], no_tqdm=True):
         return tup
-    raise RuntimeError("APIClient.run_queries yielded no result")
+    raise RuntimeError("client.run_queries yielded no result")
 
 
 def _agent_to_tool_pair(agent: Agent, loop: asyncio.AbstractEventLoop):
