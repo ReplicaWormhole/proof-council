@@ -14,7 +14,7 @@
   <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-green"></a>
 </p>
 
-ProofCouncil helps you run configurable proof agents, inspect execution traces, review costs, and iterate on workflow presets locally. It was used to create an agent for the Second Batch of First Proof.
+ProofCouncil helps you run configurable proof agents, inspect execution traces, review costs, and iterate on workflow presets locally. It was used to create an agent for the Second Batch of First Proof. You may find more information about ProofCouncil in the accompanying paper ProofCouncil.pdf, which can be found in the top folder of this repository.
 
 ## Quick Start
 
