@@ -32,7 +32,23 @@ def _default_api_client_factory(model_spec: ModelSpec):
 
     cfg = load_solver_config(model_spec)
     cfg = {k: v for k, v in cfg.items() if not k.startswith("__")}
+    if cfg.get("api") == "codex_cli":
+        from proofstack.codex_exec_client import CodexExecClient
+
+        cfg = {k: v for k, v in cfg.items() if k != "api"}
+        return CodexExecClient(**cfg)
     return APIClient(**cfg)
+
+
+def model_api_name(model_spec: ModelSpec) -> str | None:
+    """Return the configured provider/backend name for a model spec."""
+    from mathagents import load_solver_config
+
+    cfg = load_solver_config(model_spec)
+    if not isinstance(cfg, dict):
+        return None
+    api = cfg.get("api")
+    return str(api) if api else None
 
 
 class ResumeCache:
@@ -214,7 +230,7 @@ class RunContext:
         return path
 
 
-__all__ = ["ModelSpec", "ResumeCache", "RunContext", "default_run_id"]
+__all__ = ["ModelSpec", "ResumeCache", "RunContext", "default_run_id", "model_api_name"]
 
 
 def _agent_lookup_keys(agent: "Agent") -> tuple[str, ...]:

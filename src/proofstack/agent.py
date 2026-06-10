@@ -34,6 +34,8 @@ _CONFIG_ATTR_ALIASES: dict[str, str] = {
     "user_prompt": "USER_PROMPT",
     "model": "MODEL",
     "sandbox": "SANDBOX",
+    "file_io_mode": "FILE_IO_MODE",
+    "codex_workspace_sandbox": "CODEX_WORKSPACE_SANDBOX",
 }
 
 _CACHE_CONFIG_ATTRS: tuple[str, ...] = (

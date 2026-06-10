@@ -1,7 +1,7 @@
 """Advisory Council — parallel multi-model fanout.
 
 The Council is invoked when the Author emits a ``<council>...</council>``
-block in its turn. Each council member is a single API call to a
+block in its turn. Each council member is a single model call to a
 strong model (gpt-5.5-pro, claude-opus-4.x, gemini-3.x-pro, …) given
 the same workspace files plus the Author's question. Members run in
 parallel; a placeholder ``synthesizer_model`` field is reserved for a
@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from proofstack.agent import Agent
 from proofstack.budget import BudgetExhausted
-from proofstack.context import ModelSpec
+from proofstack.context import ModelSpec, model_api_name
 from proofstack.kinds.api_call import APICallAgent
 
 
@@ -53,6 +53,41 @@ alongside replies from other Council members.
 """
 
 
+COUNCIL_MEMBER_SYSTEM_CODEX = """\
+You are a member of an Advisory Council running through Codex CLI. A
+research mathematician (the "Author") is iterating on a written
+deliverable in an Author/Critic loop and has asked the Council for
+input on a specific sub-question.
+
+You are not a second Critic — a separate agent does line-by-line
+correctness review. Your role is closer to a research collaborator:
+when the Author has hit a wall on a sub-problem or wants a different
+angle, you suggest alternative approaches, point at adjacent literature
+you know or can responsibly look up with the current Codex runtime,
+propose decompositions, or share intuition about which directions are
+likely to be fruitful.
+
+If Codex can run local shell, Python, LaTeX, or network lookup commands
+in the current environment, use them when they materially improve your
+answer. If not, state uncertainty explicitly rather than inventing
+support. Do not edit repository or workspace files; this council seat
+should only return advice.
+
+Even when the Author phrases the question as "is X correct?", prefer a
+constructive answer over a verdict — "here is how I would approach it;
+here are the three pieces you would need; here is a related result that
+might suggest a strategy" — over "yes/no, this is right/wrong".
+
+Read the current `answer.tex`, `research_notes.tex`, and
+`references.bib` for context, then engage with the Author's question.
+
+Be opinionated where you have a real angle to offer. If you are not
+sure, say "uncertain" rather than confabulating. Keep your reply under
+~600 words; the Author will read your reply verbatim alongside replies
+from other Council members.
+"""
+
+
 COUNCIL_MEMBER_USER = """\
 ### Author's question for the Council ###
 {author_question}
@@ -84,7 +119,7 @@ class CouncilReply(BaseModel):
 
 
 class CouncilMember(APICallAgent):
-    """One council seat — single API call against the configured model.
+    """One council seat — single model call against the configured model.
 
     The model is set per-instance via a constructor argument so a
     single class can serve all seats; ``self.MODEL`` is shadowed at
@@ -128,13 +163,24 @@ class CouncilMember(APICallAgent):
         for k in ("answer_tex", "research_notes_tex", "references_bib"):
             if not fields.get(k):
                 fields[k] = "(empty)"
+        system_prompt = (
+            COUNCIL_MEMBER_SYSTEM_CODEX
+            if self._uses_codex_cli()
+            else self.SYSTEM_PROMPT
+        )
         return [
-            {"role": "developer", "content": self.SYSTEM_PROMPT},
+            {"role": "developer", "content": system_prompt},
             {"role": "user", "content": self.USER_PROMPT.format(**fields)},
         ]
 
     def parse_output(self, raw_text: str, inp: BaseModel) -> BaseModel:
         return self.Outputs(text=_strip_visible_thought_blocks(raw_text))
+
+    def _uses_codex_cli(self) -> bool:
+        if not hasattr(self, "ctx"):
+            return False
+        spec = self.ctx.model_for(self, self.MODEL)
+        return model_api_name(spec) == "codex_cli"
 
 
 class Council(Agent):

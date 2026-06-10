@@ -15,7 +15,9 @@ Output: free-form referee prose, ending with a single
 tag on its own line. The workflow uses ``answer_ready`` for its
 early-stop gate.
 
-Tools: ``web_search_preview`` and ``code_interpreter`` (no container files).
+Provider-backed configs may expose hosted search and Python tools.
+Codex-backed configs use Codex CLI's local shell/workspace capabilities
+instead of provider-managed tools.
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
-from proofstack.context import ModelSpec
+from proofstack.context import ModelSpec, model_api_name
 from proofstack.kinds.api_call import APICallAgent
 from proofstack.latex_contract import (
     DEFAULT_FIRSTPROOF_PAGE_LIMIT,
@@ -47,6 +49,42 @@ from the literature, and perform cross-checks using code-interpreter
 where appropriate. Your goal is to identify *any* issues which could
 affect the mathematical validity of the given treatment. Then give me
 a full report.
+
+Set `<answer_ready>true</answer_ready>` only if answer.tex fully solves
+the stated problem as a complete rigorous solution, with no remaining
+open gaps, no unproved essential lemmas, and no missing assumptions. If
+the problem statement was ambiguous, answer.tex must explicitly record
+the adopted interpretation in a "Problem statement and interpretation"
+section and solve that faithful interpretation. A partial final answer
+that merely lists open issues is not answer-ready and must end with
+`<answer_ready>false</answer_ready>`.
+
+Also set `<answer_ready>false</answer_ready>` if answer.tex violates
+the First Proof LaTeX contract supplied below: wrong document class,
+font size other than 12pt, over the page limit, non-permitted
+margin/layout changes, line-spacing changes, in-document font-size
+changes, or any LaTeX compile failure.
+
+End your report with exactly one of these two lines, on its own line, with no additional text:
+
+- `<answer_ready>true</answer_ready>`
+- `<answer_ready>false</answer_ready>`"""
+
+
+CRITIC_PROMPT_HEAD_CODEX = """\
+Act as a strict mathematical referee. Below you find a mathematical
+problem statement together with an attempt at a solution. Perform an
+in-depth review of this given answer, going paragraph by paragraph to
+audit its validity. Check for any mathematical errors, gaps in given
+arguments, missing assumptions when applying known results, handwaving,
+unclear formulations, unproved essential lemmas, or unresolved
+"Remaining open issues". Use Codex's local shell, Python, and LaTeX
+checks when useful and available. If you need outside facts or
+literature, use whatever network/local lookup capability the current
+Codex runtime provides; if it is unavailable, mark the point as
+uncertain rather than inventing support. Your goal is to identify *any*
+issues which could affect the mathematical validity of the given
+treatment. Then give me a full report.
 
 Set `<answer_ready>true</answer_ready>` only if answer.tex fully solves
 the stated problem as a complete rigorous solution, with no remaining
@@ -257,6 +295,8 @@ class ACCritic(APICallAgent):
         messages_after: list[dict[str, Any]] = Field(default_factory=list)
 
     def extra_client_kwargs(self) -> dict[str, Any]:
+        if self._uses_codex_cli():
+            return {}
         return {
             "tools": [
                 (None, {"type": "code_interpreter", "container": {"type": "auto"}}),
@@ -271,7 +311,7 @@ class ACCritic(APICallAgent):
         for k in ("answer_tex", "research_notes_tex", "references_bib", "author_thinking"):
             if not fields.get(k):
                 fields[k] = "(empty)"
-        fields["prompt_head"] = CRITIC_PROMPT_HEAD
+        fields["prompt_head"] = CRITIC_PROMPT_HEAD_CODEX if self._uses_codex_cli() else CRITIC_PROMPT_HEAD
 
         if inp.mode == "stateful":
             new_user = CRITIC_STATEFUL_USER.format(**fields)
@@ -315,6 +355,12 @@ class ACCritic(APICallAgent):
             parse_failed=parse_failed,
             messages_after=messages_after,
         )
+
+    def _uses_codex_cli(self) -> bool:
+        if not hasattr(self, "ctx"):
+            return False
+        spec = self.ctx.model_for(self, self.MODEL)
+        return model_api_name(spec) == "codex_cli"
 
 
 __all__ = ["ACCritic", "CriticMode"]
