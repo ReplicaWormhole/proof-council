@@ -1,0 +1,10 @@
+model: gpt-5.5
+api: codex_cli
+reasoning_effort: high
+codex_sandbox: read-only
+approval_policy: never
+timeout: 3600
+persistent_session: false
+read_cost: 2.5
+cache_read_cost: 0.25
+write_cost: 15

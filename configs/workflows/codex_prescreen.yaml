@@ -1,0 +1,66 @@
+workflow: proofstack.agents.dag_workflow.DAGWorkflow
+description: >
+  Codex-first one-shot pre-screen for a submitted research problem. This
+  preset uses the Codex CLI backend through ChatGPT/Codex authentication
+  instead of provider API keys.
+inputs:
+  problem: ''
+budget:
+  max_usd: 30.0
+  max_wallclock_s: 3600
+components:
+  cfg_prescreen:
+    model: models/codex/gpt-55-high
+    messages:
+    - role: developer
+      content: |
+        You are a senior research mathematician acting as referee for a
+        pre-screen of a problem submitted to an AI-based math research
+        workflow. Your job is not to solve the problem in full. Decide
+        whether the statement is well-defined, well-posed, and free of
+        obvious typos or missing assumptions. Be terse and precise. Do
+        not invent results.
+    - role: user
+      content: |
+        Submitted problem:
+
+        ----
+        {problem}
+        ----
+
+        Return exactly these blocks, with no text outside them:
+
+        <report>
+        A concise referee-style report.
+        </report>
+
+        <cleaned_latex>
+        A complete standalone LaTeX document containing only the cleaned
+        problem statement.
+        </cleaned_latex>
+
+        <verdict>
+        verdict: <one of: well-posed | typo-or-clarification | mathematical-issues | known-answer | easy>
+        summary: <one-sentence takeaway>
+        suitable_for_test: <true | false>
+        </verdict>
+    output:
+      xml_tags:
+      - report
+      - cleaned_latex
+      - verdict
+      default_field: report
+dag:
+  nodes:
+  - id: prescreen
+    kind: agent
+    agent: proofstack.agents.configurable_prompt.ConfigurablePromptAgent
+    name: cfg_prescreen
+    inputs:
+      problem: $input.problem
+  outputs:
+    report: $node.prescreen.report
+    cleaned_latex: $node.prescreen.cleaned_latex
+    verdict: $node.prescreen.verdict
+export:
+  label: Codex Prescreen

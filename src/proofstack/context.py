@@ -32,6 +32,11 @@ def _default_api_client_factory(model_spec: ModelSpec):
 
     cfg = load_solver_config(model_spec)
     cfg = {k: v for k, v in cfg.items() if not k.startswith("__")}
+    if cfg.get("api") == "codex_cli":
+        from proofstack.codex_exec_client import CodexExecClient
+
+        cfg = {k: v for k, v in cfg.items() if k != "api"}
+        return CodexExecClient(**cfg)
     return APIClient(**cfg)
 
 
