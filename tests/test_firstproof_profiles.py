@@ -25,6 +25,8 @@ def _clear_firstproof_env(monkeypatch):
     for key in list(fp.os.environ):
         if key.startswith("FIRSTPROOF_"):
             monkeypatch.delenv(key, raising=False)
+
+
 def test_firstproof_defaults_to_submission_workflow(monkeypatch):
     _clear_firstproof_env(monkeypatch)
 
@@ -38,7 +40,7 @@ def test_firstproof_defaults_to_submission_workflow(monkeypatch):
     assert settings.budget_usd_per_question == 1000.0
 
 
-def test_firstproof_submission_profile_restores_adaptive_continuation(monkeypatch):
+def test_firstproof_ignores_legacy_profile_env_without_warning(monkeypatch):
     _clear_firstproof_env(monkeypatch)
     monkeypatch.setenv("FIRSTPROOF_PROFILE", "firstproof_submission")
 
@@ -52,11 +54,11 @@ def test_firstproof_submission_profile_restores_adaptive_continuation(monkeypatc
     assert settings.budget_usd_per_question == 1000.0
     assert fp._round_schedule(settings)[:3] == [5, 10, 15]
     assert fp._round_schedule(settings)[-1] == 200
+    assert not any("FIRSTPROOF_PROFILE" in warning for warning in settings.warnings)
 
 
-def test_firstproof_env_overrides_profile_defaults(monkeypatch):
+def test_firstproof_env_overrides_built_in_defaults(monkeypatch):
     _clear_firstproof_env(monkeypatch)
-    monkeypatch.setenv("FIRSTPROOF_PROFILE", "firstproof_submission")
     monkeypatch.setenv("FIRSTPROOF_N_ROUNDS", "12")
     monkeypatch.setenv("FIRSTPROOF_BUDGET_USD_PER_QUESTION", "123")
 

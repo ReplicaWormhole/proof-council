@@ -18,7 +18,6 @@ import tempfile
 import time
 import uuid
 
-import yaml
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -42,7 +41,6 @@ from proofstack.latex_contract import (  # noqa: E402
 DEFAULT_INPUT_PATH = Path("/data/input/input.json")
 DEFAULT_OUTPUT_DIR = Path("/data/output")
 DEFAULT_TMP_PROBLEM_DIR = Path("/tmp/firstproof_problems")
-DEFAULT_PROFILE_PATH = REPO_ROOT / "configs" / "firstproof_profiles.yaml"
 
 _RETRIEVAL_SECRET_DIR_NAMES = frozenset(
     {".aws", ".codex", ".codex-home", ".compute_codex_home", ".ssh", "secrets"}
@@ -69,7 +67,6 @@ class Settings:
     # (the harness's outer ``timeout`` SIGKILL is still the hard bound).
     deadline_seconds: float | None
     run_namespace: str = ""
-    profile: str = ""
     adaptive_continuation: bool = False
     adaptive_max_rounds: int = 200
 
@@ -174,63 +171,6 @@ def _read_bool_env(name: str, default: bool, warnings: list[str]) -> bool:
     return default
 
 
-def _read_profile(warnings: list[str]) -> tuple[str, dict[str, Any]]:
-    name = str(os.environ.get("FIRSTPROOF_PROFILE") or "").strip()
-    if not name:
-        return "", {}
-    path = Path(os.environ.get("FIRSTPROOF_PROFILE_PATH") or DEFAULT_PROFILE_PATH)
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as exc:
-        warnings.append(f"FIRSTPROOF_PROFILE={name!r} requested but {path} could not be read: {exc}")
-        return name, {}
-    profiles = raw.get("profiles") if isinstance(raw, dict) else None
-    if not isinstance(profiles, dict):
-        warnings.append(f"{path}: missing top-level profiles mapping; ignoring FIRSTPROOF_PROFILE={name!r}.")
-        return name, {}
-    profile = profiles.get(name)
-    if not isinstance(profile, dict):
-        warnings.append(f"FIRSTPROOF_PROFILE={name!r} not found in {path}; using built-in defaults.")
-        return name, {}
-    return name, dict(profile)
-
-
-def _profile_value(profile: dict[str, Any], key: str, default: Any) -> Any:
-    value = profile.get(key, default)
-    return default if value in (None, "") else value
-
-
-def _profile_int(profile: dict[str, Any], key: str, default: int, warnings: list[str]) -> int:
-    value = _profile_value(profile, key, default)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        warnings.append(f"profile field {key}={value!r} is not an integer; using {default}.")
-        return default
-
-
-def _profile_float(profile: dict[str, Any], key: str, default: float, warnings: list[str]) -> float:
-    value = _profile_value(profile, key, default)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        warnings.append(f"profile field {key}={value!r} is not a number; using {default}.")
-        return default
-
-
-def _profile_bool(profile: dict[str, Any], key: str, default: bool, warnings: list[str]) -> bool:
-    value = _profile_value(profile, key, default)
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    warnings.append(f"profile field {key}={value!r} is not a boolean; using {default}.")
-    return default
-
-
 def _resolve_deadline_seconds(warnings: list[str]) -> float | None:
     """Compute the soft internal deadline.
 
@@ -269,7 +209,6 @@ def _resolve_deadline_seconds(warnings: list[str]) -> float | None:
 
 def _settings() -> Settings:
     warnings: list[str] = []
-    profile_name, profile = _read_profile(warnings)
     deadline_seconds = _resolve_deadline_seconds(warnings)
     run_namespace = os.environ.get("FIRSTPROOF_RUN_NAMESPACE")
     if not run_namespace:
@@ -281,51 +220,50 @@ def _settings() -> Settings:
     return Settings(
         input_path=Path(os.environ.get("FIRSTPROOF_INPUT_PATH") or DEFAULT_INPUT_PATH),
         output_dir=Path(os.environ.get("FIRSTPROOF_OUTPUT_DIR") or DEFAULT_OUTPUT_DIR),
-        workflow=os.environ.get("FIRSTPROOF_WORKFLOW") or str(_profile_value(profile, "workflow", "firstproof_submission")),
+        workflow=os.environ.get("FIRSTPROOF_WORKFLOW") or "firstproof_submission",
         max_parallel=_read_int_env(
             "FIRSTPROOF_MAX_PARALLEL",
-            _profile_int(profile, "max_parallel", 6, warnings),
+            6,
             warnings,
         ),
         page_limit=_read_int_env(
             "FIRSTPROOF_PAGE_LIMIT",
-            _profile_int(profile, "page_limit", DEFAULT_FIRSTPROOF_PAGE_LIMIT, warnings),
+            DEFAULT_FIRSTPROOF_PAGE_LIMIT,
             warnings,
         ),
         budget_usd_per_question=_read_float_env(
             "FIRSTPROOF_BUDGET_USD_PER_QUESTION",
-            _profile_float(profile, "budget_usd_per_question", 1000.0, warnings),
+            1000.0,
             warnings,
         ),
         n_rounds=_read_int_env(
             "FIRSTPROOF_N_ROUNDS",
-            _profile_int(profile, "n_rounds", 10, warnings),
+            10,
             warnings,
         ),
         round_batch_size=_read_int_env(
             "FIRSTPROOF_ROUND_BATCH_SIZE",
-            _profile_int(profile, "round_batch_size", 5, warnings),
+            5,
             warnings,
         ),
         adaptive_continuation=_read_bool_env(
             "FIRSTPROOF_ADAPTIVE_CONTINUATION",
-            _profile_bool(profile, "adaptive_continuation", True, warnings),
+            True,
             warnings,
         ),
         adaptive_max_rounds=_read_int_env(
             "FIRSTPROOF_ADAPTIVE_MAX_ROUNDS",
-            _profile_int(profile, "adaptive_max_rounds", 200, warnings),
+            200,
             warnings,
         ),
         compute_codex_sandbox=(
             os.environ.get("FIRSTPROOF_COMPUTE_CODEX_SANDBOX")
-            or str(_profile_value(profile, "compute_codex_sandbox", "docker-bypass"))
+            or "docker-bypass"
         ),
         runner_script=os.environ.get("FIRSTPROOF_RUN_WORKFLOW_SCRIPT") or "scripts/run_workflow.py",
         warnings=warnings,
         deadline_seconds=deadline_seconds,
         run_namespace=run_namespace,
-        profile=profile_name,
     )
 
 
@@ -2118,7 +2056,6 @@ def _aggregate_payloads(
         "deadline_reached": deadline_reached,
         "deadline_seconds": settings.deadline_seconds,
         "workflow": settings.workflow,
-        "profile": settings.profile,
         "max_parallel": settings.max_parallel,
         "page_limit": settings.page_limit,
         "n_rounds": settings.n_rounds,

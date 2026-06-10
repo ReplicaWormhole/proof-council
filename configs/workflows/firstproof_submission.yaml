@@ -1,7 +1,7 @@
 workflow: proofstack.agents.ac.ACDAGWorkflow
 description: 'FirstProof submission preset: serious Author/Critic workflow with Pro
   Author/Critic, runtime council, compute worker, 12-page limit, and a 200-round cap
-  for app launches. The FirstProof harness profile wraps this preset in adaptive continuation
+  for app launches. The FirstProof entrypoint wraps this preset in adaptive continuation
   stages.'
 inputs:
   n_rounds: 200
