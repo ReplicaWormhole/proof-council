@@ -11,16 +11,24 @@ from pydantic import BaseModel, ConfigDict, Field
 from proofstack.agents.ac.ac_workflow import (
     ACWorkflow,
     _CompileResult,
+    _append_source_trace_feedback,
     _problem_hash,
     _resume_stop_round,
     _safe_read,
     _simple_compile_latex,
+    _source_gate_statuses,
     _state_int,
 )
 from proofstack.agents.ac.author import Author
 from proofstack.agents.ac.compute import Compute, render_compute_reply_for_author
 from proofstack.agents.ac.council import render_council_replies_for_author
 from proofstack.agents.ac.critic import ACCritic
+from proofstack.agents.ac.source_backer import write_source_backer_artifacts
+from proofstack.agents.ac.source_trace import (
+    preflight_source_trace,
+    source_trace_preflight_reasons,
+    write_source_trace_artifacts,
+)
 from proofstack.budget import BudgetExhausted
 
 
@@ -41,6 +49,10 @@ class ACJoinInput(BaseModel):
 
 
 class ACCompileGateInput(ACStateInput):
+    ready: bool = False
+
+
+class ACSourceTraceGateInput(ACStateInput):
     ready: bool = False
 
 
@@ -700,8 +712,170 @@ class ACReviewJoinBlock(_ACVisualStep):
                 state["review_for_gate"] = review.model_dump(mode="json")
                 ready_for_gate = True
         state["ready_for_gate"] = ready_for_gate
+        state["pre_accepted"] = ready_for_gate
+        if ready_for_gate:
+            review_for_gate = self._review(state.get("review_for_gate")) or review
+            await self.events.emit(
+                "ac.pre_accepted",
+                {
+                    "round": k,
+                    "author_ready": True,
+                    "critic_ready": True,
+                    "critic_mode": review_for_gate.mode,
+                },
+            )
         return self.Outputs(state=state, ready_for_gate=ready_for_gate, review_md=review.review_md)
 
+
+class ACSourceBackerBlock(_ACVisualStep):
+    description: ClassVar[str] = "Add inline source locators after mathematical pre-acceptance."
+    Inputs = ACSourceTraceGateInput
+    HIDDEN_GRAPH_INPUTS: ClassVar[set[str]] = {"state", "ready"}
+    PALETTE: ClassVar[dict[str, str]] = {
+        "id": "ac_source_backer_block",
+        "label": "Source Backer",
+        "group": "Author/Critic",
+        "description": "Annotates a pre-accepted proof with inline exact source locators.",
+        "keywords": "author critic source backer citation inline pre accepted",
+    }
+
+    class Outputs(ACStateOutput):
+        source_backed: bool = False
+        ready_for_gate: bool = False
+        source_backing_report: str = ""
+
+    async def run(self, inp):  # type: ignore[override]
+        state = self._state(inp.state)
+        if not inp.ready:
+            state["source_backed"] = False
+            state["source_backing_skipped"] = True
+            return self.Outputs(state=state)
+
+        review = self._review(state.get("review_for_gate")) or self._review(state.get("round_review"))
+        if review is None:
+            state["source_backed"] = False
+            return self.Outputs(state=state)
+
+        workspace = self._workspace(state)
+        ac_inp = self._inp(state)
+        k = int(state.get("current_round", 0) or 0)
+        out = await self.source_backer(
+            problem=ac_inp.problem,
+            round=k,
+            n_rounds=ac_inp.n_rounds,
+            page_limit=ac_inp.page_limit,
+            answer_tex=_safe_read(workspace / "answer.tex"),
+            research_notes_tex=_safe_read(workspace / "research_notes.tex"),
+            references_bib=_safe_read(workspace / "references.bib"),
+            critic_review=review.review_md,
+            source_feedback=str(state.get("pending_workflow_feedback") or ""),
+        )
+        (workspace / "answer.tex").write_text(out.answer_tex, encoding="utf-8")
+        (workspace / "references.bib").write_text(out.references_bib, encoding="utf-8")
+        write_source_backer_artifacts(workspace, out, round=k)
+        state["source_backed"] = bool(out.source_backed)
+        state["source_backing_skipped"] = False
+        state["source_backer"] = out.model_dump(mode="json")
+        state["ready_for_gate"] = True
+        await self.events.emit(
+            "ac.source_backing_done",
+            {
+                "round": k,
+                "source_backed": out.source_backed,
+                "parse_failed": out.parse_failed,
+                "files_changed": out.files_changed,
+            },
+        )
+        return self.Outputs(
+            state=state,
+            source_backed=bool(out.source_backed),
+            ready_for_gate=True,
+            source_backing_report=out.report_md,
+        )
+
+
+class ACSourceTraceBlock(_ACVisualStep):
+    description: ClassVar[str] = "Apply the fail-closed source trace gate."
+    Inputs = ACSourceTraceGateInput
+    HIDDEN_GRAPH_INPUTS: ClassVar[set[str]] = {"state", "ready"}
+    PALETTE: ClassVar[dict[str, str]] = {
+        "id": "ac_source_trace_block",
+        "label": "Source Trace",
+        "group": "Author/Critic",
+        "description": "Requires every accepted proof step to be cited, proved, or definitional.",
+        "keywords": "author critic source trace citation proof gate",
+    }
+
+    class Outputs(ACStateOutput):
+        source_ready: bool = False
+        ready_for_gate: bool = False
+        source_trace_report: str = ""
+
+    async def run(self, inp):  # type: ignore[override]
+        state = self._state(inp.state)
+        if not inp.ready:
+            state["source_ready"] = False
+            state["source_trace_skipped"] = True
+            return self.Outputs(state=state)
+
+        author = self._author(state)
+        review = self._review(state.get("review_for_gate")) or self._review(state.get("round_review"))
+        if author is None or review is None:
+            state["source_ready"] = False
+            return self.Outputs(state=state)
+
+        workspace = self._workspace(state)
+        ac_inp = self._inp(state)
+        k = int(state.get("current_round", 0) or 0)
+        answer_tex = _safe_read(workspace / "answer.tex")
+        references_bib = _safe_read(workspace / "references.bib")
+        preflight = source_trace_preflight_reasons(answer_tex, references_bib)
+        if preflight:
+            out = preflight_source_trace(preflight)
+        else:
+            out = await self.source_trace(
+                problem=ac_inp.problem,
+                round=k,
+                n_rounds=ac_inp.n_rounds,
+                page_limit=ac_inp.page_limit,
+                answer_tex=answer_tex,
+                research_notes_tex=_safe_read(workspace / "research_notes.tex"),
+                references_bib=references_bib,
+                critic_review=review.review_md,
+            )
+
+        write_source_trace_artifacts(workspace, out, round=k)
+        source_ready = bool(out.source_ready)
+        state["source_ready"] = source_ready
+        state["source_trace_skipped"] = False
+        state["source_trace"] = out.model_dump(mode="json")
+        state["ready_for_gate"] = source_ready
+        if source_ready:
+            await self.events.emit("ac.source_trace_ready", {"round": k})
+            return self.Outputs(
+                state=state,
+                source_ready=True,
+                ready_for_gate=True,
+                source_trace_report=out.report_md,
+            )
+
+        await self.events.emit(
+            "ac.source_trace_blocked",
+            {
+                "round": k,
+                "parse_failed": out.parse_failed,
+                "has_obligations": bool(out.missing_obligations.strip()),
+            },
+        )
+        state["pending_workflow_feedback"] = _append_source_trace_feedback(
+            str(state.get("pending_workflow_feedback") or ""), out
+        )
+        return self.Outputs(
+            state=state,
+            source_ready=False,
+            ready_for_gate=False,
+            source_trace_report=out.report_md,
+        )
 
 class ACCompileGateBlock(_ACVisualStep):
     description: ClassVar[str] = "Apply the deterministic compile/page gate."
@@ -742,6 +916,10 @@ class ACCompileGateBlock(_ACVisualStep):
                         "round": k,
                         "author_ready": True,
                         "critic_ready": True,
+                        "pre_accepted": bool(state.get("pre_accepted", False)),
+                        "source_backed": bool(state.get("source_backed", False)),
+                        "source_ready": bool(state.get("source_ready", False)),
+                        "accepted": True,
                         "critic_mode": review_for_gate.mode,
                     },
                 )
@@ -859,6 +1037,11 @@ class ACReturnBlock(ACWorkflow):
         ]
         last_round_run = int(state.get("last_round_run", -1) or -1)
         last_critic_accepted = reviews[-1].answer_ready if reviews else None
+        gate_statuses = _source_gate_statuses(workspace)
+        pre_accepted = bool(last_critic_accepted)
+        source_backed = bool(gate_statuses.get("source_backed", False))
+        source_ready = bool(gate_statuses.get("source_ready", False))
+        accepted = bool(state.get("early_stopped", False) and fixed.compiled and source_ready)
         final_critic_answer_ready = False
         final_critic_mode_run = "not_run"
         final_critic_review_md = ""
@@ -916,13 +1099,34 @@ class ACReturnBlock(ACWorkflow):
             bib_path=bib_arg,
             ship_bib_alongside=ac_inp.ship_bib_alongside,
         )
+        (
+            lamport_path,
+            lamport_ready,
+            lamport_compiled,
+            lamport_pages,
+            lamport_report_md,
+        ) = await self._run_lamport_rewrite(
+            inp=ac_inp,
+            workspace=workspace,
+            accepted_tex=fixed.tex,
+            accepted=accepted,
+        )
         terminal_outputs = {
             "answer_tex": self._encode_run_path(answer_path),
+            "lamport_tex": self._encode_run_path(lamport_path),
             "compiled": fixed.compiled,
             "pages": fixed.pages,
             "rounds_completed": last_round_run,
             "early_stopped": bool(state.get("early_stopped", False)),
             "last_critic_accepted": last_critic_accepted,
+            "pre_accepted": pre_accepted,
+            "source_backed": source_backed,
+            "source_ready": source_ready,
+            "accepted": accepted,
+            "lamport_ready": lamport_ready,
+            "lamport_compiled": lamport_compiled,
+            "lamport_pages": lamport_pages,
+            "lamport_report_md": lamport_report_md,
             "final_critic_answer_ready": final_critic_answer_ready,
             "final_critic_mode_run": final_critic_mode_run,
             "final_critic_review_md": final_critic_review_md,
@@ -953,6 +1157,7 @@ class ACReturnBlock(ACWorkflow):
         return self.Outputs(
             problem_id=ac_inp.problem_id,
             answer_tex=answer_path,
+            lamport_tex=lamport_path,
             research_notes_tex=workspace / "research_notes.tex",
             references_bib=workspace / "references.bib",
             compiled=fixed.compiled,
@@ -960,6 +1165,14 @@ class ACReturnBlock(ACWorkflow):
             rounds_completed=last_round_run,
             early_stopped=bool(state.get("early_stopped", False)),
             last_critic_accepted=last_critic_accepted,
+            pre_accepted=pre_accepted,
+            source_backed=source_backed,
+            source_ready=source_ready,
+            accepted=accepted,
+            lamport_ready=lamport_ready,
+            lamport_compiled=lamport_compiled,
+            lamport_pages=lamport_pages,
+            lamport_report_md=lamport_report_md,
             final_critic_answer_ready=final_critic_answer_ready,
             final_critic_mode_run=final_critic_mode_run,
             final_critic_review_md=final_critic_review_md,
@@ -975,6 +1188,8 @@ __all__ = [
     "ACCouncilBlock",
     "ACComputeBlock",
     "ACReviewJoinBlock",
+    "ACSourceBackerBlock",
+    "ACSourceTraceBlock",
     "ACCompileGateBlock",
     "ACReturnBlock",
 ]

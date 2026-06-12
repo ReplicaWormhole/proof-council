@@ -35,3 +35,9 @@ components:
     model: models/openai/gpt-54-mini
   ACCritic:
     model: models/openai/gpt-54-mini
+  ACSourceBacker:
+    model: models/openai/gpt-54-mini
+  ACSourceTrace:
+    model: models/openai/gpt-54-mini
+  ACLamportRewriter:
+    model: models/openai/gpt-54-mini

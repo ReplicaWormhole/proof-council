@@ -8,6 +8,8 @@ outputs/
 smoke-input/
 smoke-output/
 private_problems/
+# Local ad hoc problem statements. Existing tracked fixtures remain tracked.
+problems/*.txt
 uv.lock
 brainstorming
 .claude

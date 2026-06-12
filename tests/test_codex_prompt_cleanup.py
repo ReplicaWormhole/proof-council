@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from proofstack.agents.ac.council import CouncilMember  # noqa: E402
 from proofstack.agents.ac.critic import ACCritic  # noqa: E402
+from proofstack.agents.ac.source_trace import ACSourceTrace  # noqa: E402
 from proofstack.context import RunContext  # noqa: E402
 
 
@@ -86,6 +87,29 @@ def test_codex_council_prompt_does_not_reference_provider_tools() -> None:
         )
         text = _text(messages)
 
+    assert "Codex CLI" in text
+    assert "code_interpreter" not in text
+    assert "code-interpreter" not in text
+    assert "web_search_preview" not in text
+
+
+def test_codex_source_trace_prompt_and_kwargs_do_not_reference_provider_tools() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = RunContext.create(
+            run_id="test",
+            root_workdir=Path(tmp),
+            flat=True,
+            component_configs={"ACSourceTrace": {"model": _CODEX_MODEL}},
+        )
+        auditor = ACSourceTrace(ctx)
+
+        kwargs = auditor.extra_client_kwargs()
+        messages = auditor.render_messages(
+            auditor.Inputs(problem="Prove X.", answer_tex="Theorem 1 proves X.")
+        )
+        text = _text(messages)
+
+    assert kwargs == {}
     assert "Codex CLI" in text
     assert "code_interpreter" not in text
     assert "code-interpreter" not in text

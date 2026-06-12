@@ -115,7 +115,7 @@ def test_author_codex_workspace_reads_modified_local_files_without_openai() -> N
 
     assert len(captured) == 1
     assert captured[0]["api"] == "codex_cli"
-    assert captured[0]["codex_sandbox"] == "workspace-write"
+    assert captured[0]["codex_sandbox"] == "docker-bypass"
     assert Path(captured[0]["cwd"]).name == "codex_workspace"
     assert out.via == "codex_workspace"
     assert out.ready is True

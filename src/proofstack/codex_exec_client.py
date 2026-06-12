@@ -32,7 +32,7 @@ class CodexExecClient:
         cwd: str | Path | None = None,
         timeout: float = 3600.0,
         codex_sandbox: str = "read-only",
-        approval_policy: str | None = "never",
+        approval_policy: str | None = None,
         skip_git_repo_check: bool = True,
         json_output: bool = True,
         output_schema: str | Path | None = None,
@@ -50,6 +50,9 @@ class CodexExecClient:
         self.cwd = Path(cwd) if cwd is not None else None
         self.timeout = float(timeout)
         self.codex_sandbox = codex_sandbox
+        # Kept as a config field for compatibility with older configs.
+        # Current Codex CLI noninteractive mode exposes sandbox control but
+        # not an approval-policy flag.
         self.approval_policy = approval_policy
         self.skip_git_repo_check = bool(skip_git_repo_check)
         self.json_output = bool(json_output)
@@ -126,8 +129,6 @@ class CodexExecClient:
         if self.output_schema is not None:
             cmd.extend(["--output-schema", str(self.output_schema)])
         cmd.extend(_sandbox_args(self.codex_sandbox, is_resume=is_resume))
-        if self.approval_policy and not is_resume:
-            cmd.extend(["--ask-for-approval", self.approval_policy])
         cmd.extend(self.extra_args)
         cmd.append("-")
         return cmd

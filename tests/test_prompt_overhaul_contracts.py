@@ -25,6 +25,7 @@ from proofstack.agents.ac.critic import (  # noqa: E402
     CRITIC_STATEFUL_USER,
     ACCritic,
 )
+from proofstack.agents.ac.source_backer import SOURCE_BACKER_SYSTEM  # noqa: E402
 
 
 def _squash(text: str) -> str:
@@ -70,6 +71,9 @@ class PromptOverhaulContractTests(unittest.TestCase):
             self.assertIn("no remaining open gaps", flat)
             self.assertIn("no unproved essential lemmas", flat)
             self.assertIn("Do not declare ``<ready>true</ready>`` merely because", flat)
+            self.assertIn("pre-acceptance signal", flat)
+            self.assertIn("separate source-backing stage", flat)
+            self.assertIn("Never add a final", flat)
             self.assertNotIn("or — if no more turns remain", prompt)
             self.assertNotIn("or - if no more turns remain", prompt)
 
@@ -83,7 +87,19 @@ class PromptOverhaulContractTests(unittest.TestCase):
         self.assertIn("Problem statement and interpretation", flat)
         self.assertIn("partial final answer that merely lists open issues is not answer-ready", flat)
         self.assertIn("`<answer_ready>false</answer_ready>`", flat)
+        self.assertIn("mathematically pre-accepted", flat)
+        self.assertIn("Do not set `<answer_ready>false</answer_ready>` solely because citations", flat)
+        self.assertIn("Source observations for the post-acceptance source-backer", flat)
         self.assertNotIn("You are a research mathematician", flat)
+
+    def test_source_backer_only_adds_inline_sources_after_pre_acceptance(self) -> None:
+        flat = _squash(SOURCE_BACKER_SYSTEM)
+
+        self.assertIn("pre-accepted answer.tex mathematically", flat)
+        self.assertIn("Preserve the mathematical content", flat)
+        self.assertIn("Put source support directly next to the logical step", flat)
+        self.assertIn("Do not collect support in a final", flat)
+        self.assertIn("<source_backed>true</source_backed>", flat)
 
     def test_ac_prompts_surface_firstproof_latex_contract(self) -> None:
         author_inputs = Author.Inputs(

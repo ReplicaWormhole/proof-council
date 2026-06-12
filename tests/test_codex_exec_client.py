@@ -64,6 +64,7 @@ def test_codex_exec_client_adapts_final_message_and_usage() -> None:
         assert args[:2] == ["exec", "-m"]
         assert "--json" in args
         assert "--output-last-message" in args
+        assert "--ask-for-approval" not in args
         assert conversation[-1]["role"] == "assistant"
         assert "prove x" in conversation[-1]["content"]
         assert cost["input_tokens"] == 10

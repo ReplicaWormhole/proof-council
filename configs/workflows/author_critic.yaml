@@ -27,6 +27,12 @@ components:
     model: models/openai/gpt-55-pro
   ACCritic:
     model: models/openai/gpt-55-pro
+  ACSourceBacker:
+    model: models/openai/gpt-55-pro
+  ACSourceTrace:
+    model: models/openai/gpt-55-pro
+  ACLamportRewriter:
+    model: models/openai/gpt-55-pro
 dag:
   nodes:
   - id: problem
@@ -128,12 +134,38 @@ dag:
           subtitle: collects reports
           x: 1088
           y: 120
+      - id: source_backer
+        kind: agent
+        needs:
+        - review_join
+        agent: proofstack.agents.ac.ACSourceBackerBlock
+        inputs:
+          state: $node.review_join.state
+          ready: $node.review_join.ready_for_gate
+        ui:
+          label: Source Backer
+          subtitle: inline locators
+          x: 1429
+          y: 210
+      - id: source_trace_gate
+        kind: agent
+        needs:
+        - source_backer
+        agent: proofstack.agents.ac.ACSourceTraceBlock
+        inputs:
+          state: $node.source_backer.state
+          ready: $node.source_backer.ready_for_gate
+        ui:
+          label: Source Trace
+          subtitle: citations + proofs
+          x: 1775
+          y: 210
       - id: ready_gate
         kind: if_else
         needs:
-        - review_join
+        - source_trace_gate
         inputs:
-          ready_for_gate: $node.review_join.ready_for_gate
+          ready_for_gate: $node.source_trace_gate.ready_for_gate
         condition:
           python: bool(inputs.get("ready_for_gate"))
         then_label: ready
@@ -146,8 +178,8 @@ dag:
           ready: false
         ui:
           label: Ready gate
-          subtitle: Author + Critic ready
-          x: 1429
+          subtitle: source verified
+          x: 1775
           y: 33
       - id: compile_gate
         kind: agent
@@ -155,12 +187,12 @@ dag:
         - ready_gate
         agent: proofstack.agents.ac.ACCompileGateBlock
         inputs:
-          state: $node.review_join.state
+          state: $node.source_trace_gate.state
           ready: $node.ready_gate.ready
         ui:
           label: Compile Gate
           subtitle: PDF builds within limit
-          x: 1775
+          x: 2120
           y: 142
       state_updates:
         ac_state: $node.compile_gate.state
@@ -198,6 +230,15 @@ dag:
     rounds_completed: $node.return.rounds_completed
     early_stopped: $node.return.early_stopped
     last_critic_accepted: $node.return.last_critic_accepted
+    pre_accepted: $node.return.pre_accepted
+    source_backed: $node.return.source_backed
+    source_ready: $node.return.source_ready
+    accepted: $node.return.accepted
+    lamport_tex: $node.return.lamport_tex
+    lamport_ready: $node.return.lamport_ready
+    lamport_compiled: $node.return.lamport_compiled
+    lamport_pages: $node.return.lamport_pages
+    lamport_report_md: $node.return.lamport_report_md
     final_critic_answer_ready: $node.return.final_critic_answer_ready
     final_critic_mode_run: $node.return.final_critic_mode_run
     final_critic_review_md: $node.return.final_critic_review_md

@@ -59,11 +59,23 @@ section and solve that faithful interpretation. A partial final answer
 that merely lists open issues is not answer-ready and must end with
 `<answer_ready>false</answer_ready>`.
 
+Here `<answer_ready>true</answer_ready>` means mathematically
+pre-accepted. It is not final acceptance. A separate post-acceptance
+source-backing stage will add exact inline locators, and a source-trace
+gate will decide whether the pre-accepted proof becomes accepted.
+
 Also set `<answer_ready>false</answer_ready>` if answer.tex violates
 the First Proof LaTeX contract supplied below: wrong document class,
 font size other than 12pt, over the page limit, non-permitted
 margin/layout changes, line-spacing changes, in-document font-size
 changes, or any LaTeX compile failure.
+
+Do not set `<answer_ready>false</answer_ready>` solely because citations
+are broad or exact locators are missing. Instead, list such issues in a
+"Source observations for the post-acceptance source-backer" subsection.
+Do set `<answer_ready>false</answer_ready>` if a cited external result
+appears mathematically unsupported, misquoted, inapplicable, or too weak
+for the step it is meant to justify.
 
 End your report with exactly one of these two lines, on its own line, with no additional text:
 
@@ -95,11 +107,23 @@ section and solve that faithful interpretation. A partial final answer
 that merely lists open issues is not answer-ready and must end with
 `<answer_ready>false</answer_ready>`.
 
+Here `<answer_ready>true</answer_ready>` means mathematically
+pre-accepted. It is not final acceptance. A separate post-acceptance
+source-backing stage will add exact inline locators, and a source-trace
+gate will decide whether the pre-accepted proof becomes accepted.
+
 Also set `<answer_ready>false</answer_ready>` if answer.tex violates
 the First Proof LaTeX contract supplied below: wrong document class,
 font size other than 12pt, over the page limit, non-permitted
 margin/layout changes, line-spacing changes, in-document font-size
 changes, or any LaTeX compile failure.
+
+Do not set `<answer_ready>false</answer_ready>` solely because citations
+are broad or exact locators are missing. Instead, list such issues in a
+"Source observations for the post-acceptance source-backer" subsection.
+Do set `<answer_ready>false</answer_ready>` if a cited external result
+appears mathematically unsupported, misquoted, inapplicable, or too weak
+for the step it is meant to justify.
 
 End your report with exactly one of these two lines, on its own line, with no additional text:
 
@@ -225,6 +249,13 @@ the problem statement was ambiguous, answer.tex must explicitly record
 the adopted interpretation in a "Problem statement and interpretation"
 section and solve that faithful interpretation. A partial final answer
 that merely lists open issues is not answer-ready.
+
+Do not set `<answer_ready>false</answer_ready>` solely because citations
+are broad or exact locators are missing. Instead, list such issues in a
+"Source observations for the post-acceptance source-backer" subsection.
+Do set `<answer_ready>false</answer_ready>` if a cited external result
+appears mathematically unsupported, misquoted, inapplicable, or too weak
+for the step it is meant to justify.
 
 End your report with `<answer_ready>true</answer_ready>` or `<answer_ready>false</answer_ready>` on its own line.
 """

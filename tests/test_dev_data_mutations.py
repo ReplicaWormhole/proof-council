@@ -1270,6 +1270,8 @@ class DevDataMutationTests(unittest.TestCase):
             "compute_node",
             "fresh_critic",
             "review_join",
+            "source_backer",
+            "source_trace_gate",
             "ready_gate",
             "compile_gate",
         ]
@@ -1287,6 +1289,10 @@ class DevDataMutationTests(unittest.TestCase):
             self.assertIn("feedback", body_by_id["llm_council"]["output_fields"])
             self.assertIn("response_md", body_by_id["compute_node"]["output_fields"])
             self.assertIn("ready_for_gate", body_by_id["review_join"]["output_fields"])
+            self.assertIn("source_backed", body_by_id["source_backer"]["output_fields"])
+            self.assertIn("ready_for_gate", body_by_id["source_backer"]["output_fields"])
+            self.assertIn("source_ready", body_by_id["source_trace_gate"]["output_fields"])
+            self.assertIn("ready_for_gate", body_by_id["source_trace_gate"]["output_fields"])
             self.assertEqual(body_by_id["compile_gate"]["output_fields"], ["state"])
             self.assertEqual(report["nodes"][-1]["agent"], "proofstack.agents.ac.ACReturnBlock")
             self.assertIn("answer_tex", report["workflow_outputs"])
@@ -1316,6 +1322,8 @@ class DevDataMutationTests(unittest.TestCase):
             "compute_node",
             "fresh_critic",
             "review_join",
+            "source_backer",
+            "source_trace_gate",
             "ready_gate",
             "compile_gate",
         ]
@@ -1361,6 +1369,8 @@ class DevDataMutationTests(unittest.TestCase):
                     "compute_node",
                     "fresh_critic",
                     "review_join",
+                    "source_backer",
+                    "source_trace_gate",
                     "ready_gate",
                     "compile_gate",
                 ],
@@ -1399,6 +1409,8 @@ class DevDataMutationTests(unittest.TestCase):
                     "compute_node",
                     "fresh_critic",
                     "review_join",
+                    "source_backer",
+                    "source_trace_gate",
                     "ready_gate",
                     "compile_gate",
                 ],

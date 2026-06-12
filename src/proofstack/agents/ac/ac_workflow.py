@@ -15,15 +15,16 @@ The Critic runs in two modes:
 - **stateful**: continuation of an existing instance, with the prior
   conversation passed in via ``prior_messages``.
 
-Early-stop logic (when ``author.ready=True``):
+Pre-acceptance and acceptance logic (when ``author.ready=True``):
 
-- last Critic was *fresh* and answer_ready=True → ship (subject to
-  deterministic gate)
+- last Critic was *fresh* and answer_ready=True → mathematically
+  pre-accepted; run SourceBacker, SourceTrace, then deterministic gate
 - last Critic was *fresh* and answer_ready=False → Author turn, loop
   continues
 - last Critic was *stateful* and answer_ready=True → run a forced-fresh
   Critic on the same files (no author turn between); if it agrees,
-  ship; if not, Author turn with **both** reviews in context
+  treat the proof as pre-accepted and run source/compile gates; if not,
+  Author turn with **both** reviews in context
 - last Critic was *stateful* and answer_ready=False → Author turn,
   loop continues
 
@@ -76,6 +77,20 @@ from proofstack.agents.ac.council import (
     render_council_replies_for_author,
 )
 from proofstack.agents.ac.critic import ACCritic
+from proofstack.agents.ac.lamport import (
+    ACLamportRewriter,
+    write_lamport_artifacts,
+)
+from proofstack.agents.ac.source_backer import (
+    ACSourceBacker,
+    write_source_backer_artifacts,
+)
+from proofstack.agents.ac.source_trace import (
+    ACSourceTrace,
+    preflight_source_trace,
+    source_trace_preflight_reasons,
+    write_source_trace_artifacts,
+)
 from proofstack.agents.dag_workflow import DAGWorkflow, _bare_wrap
 from proofstack.agents.pwc.workspace import embed_or_ship_bibliography
 from proofstack.budget import BudgetExhausted
@@ -424,6 +439,15 @@ class ACWorkflow(Agent):
         rounds_completed: int = 0
         early_stopped: bool = False
         last_critic_accepted: bool | None = None
+        pre_accepted: bool = False
+        source_backed: bool = False
+        source_ready: bool = False
+        accepted: bool = False
+        lamport_tex: Path | None = None
+        lamport_ready: bool = False
+        lamport_compiled: bool = False
+        lamport_pages: int = 0
+        lamport_report_md: str = ""
         # Final-Critic results — populated only when
         # ``enable_final_critic=True``. Otherwise empty.
         final_critic_answer_ready: bool = False
@@ -438,6 +462,9 @@ class ACWorkflow(Agent):
         self.critic = ACCritic(ctx, parent_budget_scope=self.tracker.scope)
         self.council = Council(ctx, parent_budget_scope=self.tracker.scope)
         self.compute = Compute(ctx, parent_budget_scope=self.tracker.scope)
+        self.source_backer = ACSourceBacker(ctx, parent_budget_scope=self.tracker.scope)
+        self.source_trace = ACSourceTrace(ctx, parent_budget_scope=self.tracker.scope)
+        self.lamport_rewriter = ACLamportRewriter(ctx, parent_budget_scope=self.tracker.scope)
         self._resume_cost_offset_applied = False
         # No sub-agent for latex compile any more — ``_simple_compile_latex``
         # is a plain helper. Cost-tracked as part of the workflow's own
@@ -986,60 +1013,108 @@ class ACWorkflow(Agent):
                             continue
                         review_for_gate = forced
 
-                    # Critic side has signed off (fresh, or forced-fresh-
-                    # confirmed). Deterministic gate next.
-                    gate_ok, gate_reasons = await self._deterministic_ready(
-                        workspace, page_limit=inp.page_limit
+                    await self.events.emit(
+                        "ac.pre_accepted",
+                        {
+                            "round": k,
+                            "author_ready": True,
+                            "critic_ready": True,
+                            "critic_mode": review_for_gate.mode,
+                        },
                     )
-                    if gate_ok:
+                    source_backer_out = await self._run_source_backer(
+                        inp=inp,
+                        workspace=workspace,
+                        review=review_for_gate,
+                        round=k,
+                        source_feedback=pending_workflow_feedback,
+                    )
+                    await self.events.emit(
+                        "ac.source_backing_done",
+                        {
+                            "round": k,
+                            "source_backed": source_backer_out.source_backed,
+                            "parse_failed": source_backer_out.parse_failed,
+                            "files_changed": source_backer_out.files_changed,
+                        },
+                    )
+                    source_out = await self._run_source_trace_gate(
+                        inp=inp,
+                        workspace=workspace,
+                        review=review_for_gate,
+                        round=k,
+                    )
+                    if source_out.source_ready:
+                        # Critic and source trace have signed off.
+                        # Deterministic compile/page gate is last.
+                        gate_ok, gate_reasons = await self._deterministic_ready(
+                            workspace, page_limit=inp.page_limit
+                        )
+                        if gate_ok:
+                            await self.events.emit(
+                                "ac.early_stop_agreed",
+                                {
+                                    "round": k,
+                                    "author_ready": True,
+                                    "critic_ready": True,
+                                    "source_ready": True,
+                                    "source_backed": source_backer_out.source_backed,
+                                    "pre_accepted": True,
+                                    "accepted": True,
+                                    "critic_mode": review_for_gate.mode,
+                                },
+                            )
+                            self._snapshot_round(
+                                workspace, round=k, author=author_k, review=review_k,
+                                council_replies=council_replies,
+                                forced_fresh_review=forced_fresh_for_snapshot,
+                                compute_out=compute_out,
+                            )
+                            last_round_run = k
+                            early_stopped = True
+                            self._save_resume_state(
+                                workspace,
+                                inp=inp,
+                                last_round_run=last_round_run,
+                                next_round=k + 1,
+                                review_history=review_history,
+                                critic_conversation=critic_conversation,
+                                critic_instance_turn=critic_instance_turn,
+                                pending_council_text=pending_council_text,
+                                pending_compute_text=pending_compute_text,
+                                pending_compute_zip_path=pending_compute_zip_path,
+                                pending_critique=pending_critique,
+                                early_stopped=early_stopped,
+                                pending_workflow_feedback=pending_workflow_feedback,
+                                awaiting_finalization=True,
+                            )
+                            break
+                        # Gate blocked — push the reasons to the next
+                        # Author turn so it can fix them instead of seeing
+                        # only the Critic's positive review.
                         await self.events.emit(
-                            "ac.early_stop_agreed",
+                            "ac.deterministic_gate_blocked",
+                            {"round": k, "reasons": gate_reasons},
+                        )
+                        pending_critique = (
+                            (review_for_gate.review_md or "")
+                            + "\n\n## Workflow rejection\n\n"
+                            + "The ship-gate blocked early-stop for the following reasons: "
+                            + ", ".join(gate_reasons)
+                            + ".\nPlease address these before retrying."
+                        )
+                    else:
+                        await self.events.emit(
+                            "ac.source_trace_blocked",
                             {
                                 "round": k,
-                                "author_ready": True,
-                                "critic_ready": True,
-                                "critic_mode": review_for_gate.mode,
+                                "parse_failed": source_out.parse_failed,
+                                "has_obligations": bool(source_out.missing_obligations.strip()),
                             },
                         )
-                        self._snapshot_round(
-                            workspace, round=k, author=author_k, review=review_k,
-                            council_replies=council_replies,
-                            forced_fresh_review=forced_fresh_for_snapshot,
-                            compute_out=compute_out,
+                        pending_workflow_feedback = _append_source_trace_feedback(
+                            pending_workflow_feedback, source_out
                         )
-                        last_round_run = k
-                        early_stopped = True
-                        self._save_resume_state(
-                            workspace,
-                            inp=inp,
-                            last_round_run=last_round_run,
-                            next_round=k + 1,
-                            review_history=review_history,
-                            critic_conversation=critic_conversation,
-                            critic_instance_turn=critic_instance_turn,
-                            pending_council_text=pending_council_text,
-                            pending_compute_text=pending_compute_text,
-                            pending_compute_zip_path=pending_compute_zip_path,
-                            pending_critique=pending_critique,
-                            early_stopped=early_stopped,
-                            pending_workflow_feedback=pending_workflow_feedback,
-                            awaiting_finalization=True,
-                        )
-                        break
-                    # Gate blocked — push the reasons to the next
-                    # Author turn so it can fix them instead of seeing
-                    # only the Critic's positive review.
-                    await self.events.emit(
-                        "ac.deterministic_gate_blocked",
-                        {"round": k, "reasons": gate_reasons},
-                    )
-                    pending_critique = (
-                        (review_for_gate.review_md or "")
-                        + "\n\n## Workflow rejection\n\n"
-                        + "The ship-gate blocked early-stop for the following reasons: "
-                        + ", ".join(gate_reasons)
-                        + ".\nPlease address these before retrying."
-                    )
 
                 self._snapshot_round(
                     workspace, round=k, author=author_k, review=review_k,
@@ -1113,6 +1188,11 @@ class ACWorkflow(Agent):
             last_critic_accepted = (
                 review_history[-1].answer_ready if review_history else None
             )
+            gate_statuses = _source_gate_statuses(workspace)
+            pre_accepted = bool(last_critic_accepted)
+            source_backed = bool(gate_statuses.get("source_backed", False))
+            source_ready = bool(gate_statuses.get("source_ready", False))
+            accepted = bool(early_stopped and fixed.compiled and source_ready)
             final_critic_answer_ready = False
             final_critic_mode_run = "not_run"
             final_critic_review_md = ""
@@ -1192,13 +1272,34 @@ class ACWorkflow(Agent):
                 bib_path=bib_arg,
                 ship_bib_alongside=inp.ship_bib_alongside,
             )
+            (
+                lamport_path,
+                lamport_ready,
+                lamport_compiled,
+                lamport_pages,
+                lamport_report_md,
+            ) = await self._run_lamport_rewrite(
+                inp=inp,
+                workspace=workspace,
+                accepted_tex=fixed.tex,
+                accepted=accepted,
+            )
             terminal_outputs = {
                 "answer_tex": self._encode_run_path(answer_path),
+                "lamport_tex": self._encode_run_path(lamport_path),
                 "compiled": fixed.compiled,
                 "pages": fixed.pages,
                 "rounds_completed": last_round_run,
                 "early_stopped": early_stopped,
                 "last_critic_accepted": last_critic_accepted,
+                "pre_accepted": pre_accepted,
+                "source_backed": source_backed,
+                "source_ready": source_ready,
+                "accepted": accepted,
+                "lamport_ready": lamport_ready,
+                "lamport_compiled": lamport_compiled,
+                "lamport_pages": lamport_pages,
+                "lamport_report_md": lamport_report_md,
                 "final_critic_answer_ready": final_critic_answer_ready,
                 "final_critic_mode_run": final_critic_mode_run,
                 "final_critic_review_md": final_critic_review_md,
@@ -1229,6 +1330,7 @@ class ACWorkflow(Agent):
             return self.Outputs(
                 problem_id=inp.problem_id,
                 answer_tex=answer_path,
+                lamport_tex=lamport_path,
                 research_notes_tex=workspace / "research_notes.tex",
                 references_bib=workspace / "references.bib",
                 compiled=fixed.compiled,
@@ -1236,6 +1338,14 @@ class ACWorkflow(Agent):
                 rounds_completed=last_round_run,
                 early_stopped=early_stopped,
                 last_critic_accepted=last_critic_accepted,
+                pre_accepted=pre_accepted,
+                source_backed=source_backed,
+                source_ready=source_ready,
+                accepted=accepted,
+                lamport_ready=lamport_ready,
+                lamport_compiled=lamport_compiled,
+                lamport_pages=lamport_pages,
+                lamport_report_md=lamport_report_md,
                 final_critic_answer_ready=final_critic_answer_ready,
                 final_critic_mode_run=final_critic_mode_run,
                 final_critic_review_md=final_critic_review_md,
@@ -1284,6 +1394,10 @@ class ACWorkflow(Agent):
                 rounds_completed=max(last_round_run, 0),
                 early_stopped=False,
                 last_critic_accepted=None,
+                pre_accepted=False,
+                source_backed=False,
+                source_ready=False,
+                accepted=False,
                 final_critic_answer_ready=False,
                 final_critic_mode_run="not_run",
                 final_critic_review_md="",
@@ -1488,6 +1602,7 @@ class ACWorkflow(Agent):
             else {}
         )
         outputs = {**prior_outputs, **state_outputs}
+        gate_statuses = _source_gate_statuses(workspace)
         answer_path = (
             self.ctx.root_workdir / "solutions" / f"{_safe_id(inp.problem_id)}.tex"
         )
@@ -1496,9 +1611,16 @@ class ACWorkflow(Agent):
             candidate = self._decode_run_path(prior_answer) or Path(str(prior_answer))
             if candidate.exists():
                 answer_path = candidate
+        lamport_path: Path | None = None
+        prior_lamport = outputs.get("lamport_tex") if isinstance(outputs, dict) else None
+        if prior_lamport:
+            candidate = self._decode_run_path(prior_lamport) or Path(str(prior_lamport))
+            if candidate.exists():
+                lamport_path = candidate
         return self.Outputs(
             problem_id=inp.problem_id,
             answer_tex=answer_path,
+            lamport_tex=lamport_path,
             research_notes_tex=workspace / "research_notes.tex",
             references_bib=workspace / "references.bib",
             compiled=bool(outputs.get("compiled", False)),
@@ -1519,6 +1641,18 @@ class ACWorkflow(Agent):
                 and outputs.get("last_critic_accepted") is not None
                 else None
             ),
+            pre_accepted=bool(outputs.get("pre_accepted", False)),
+            source_backed=bool(
+                outputs.get("source_backed", gate_statuses.get("source_backed", False))
+            ),
+            source_ready=bool(
+                outputs.get("source_ready", gate_statuses.get("source_ready", False))
+            ),
+            accepted=bool(outputs.get("accepted", False)),
+            lamport_ready=bool(outputs.get("lamport_ready", False)),
+            lamport_compiled=bool(outputs.get("lamport_compiled", False)),
+            lamport_pages=int(outputs.get("lamport_pages", 0) or 0),
+            lamport_report_md=str(outputs.get("lamport_report_md", "") or ""),
             final_critic_answer_ready=bool(
                 outputs.get("final_critic_answer_ready", False)
             ),
@@ -2295,6 +2429,60 @@ class ACWorkflow(Agent):
 
     # --- deterministic gate ----------------------------------------------
 
+    async def _run_source_trace_gate(
+        self,
+        *,
+        inp,
+        workspace: Path,
+        review: ACCritic.Outputs,
+        round: int,
+    ) -> ACSourceTrace.Outputs:
+        answer_tex = _safe_read(workspace / "answer.tex")
+        references_bib = _safe_read(workspace / "references.bib")
+        preflight = source_trace_preflight_reasons(answer_tex, references_bib)
+        if preflight:
+            out = preflight_source_trace(preflight)
+        else:
+            out = await self.source_trace(
+                problem=inp.problem,
+                round=round,
+                n_rounds=inp.n_rounds,
+                page_limit=inp.page_limit,
+                answer_tex=answer_tex,
+                research_notes_tex=_safe_read(workspace / "research_notes.tex"),
+                references_bib=references_bib,
+                critic_review=review.review_md,
+            )
+        write_source_trace_artifacts(workspace, out, round=round)
+        return out
+
+    async def _run_source_backer(
+        self,
+        *,
+        inp,
+        workspace: Path,
+        review: ACCritic.Outputs,
+        round: int,
+        source_feedback: str = "",
+    ) -> ACSourceBacker.Outputs:
+        out = await self.source_backer(
+            problem=inp.problem,
+            round=round,
+            n_rounds=inp.n_rounds,
+            page_limit=inp.page_limit,
+            answer_tex=_safe_read(workspace / "answer.tex"),
+            research_notes_tex=_safe_read(workspace / "research_notes.tex"),
+            references_bib=_safe_read(workspace / "references.bib"),
+            critic_review=review.review_md,
+            source_feedback=source_feedback,
+        )
+        (workspace / "answer.tex").write_text(out.answer_tex, encoding="utf-8")
+        (workspace / "references.bib").write_text(
+            out.references_bib, encoding="utf-8"
+        )
+        write_source_backer_artifacts(workspace, out, round=round)
+        return out
+
     async def _deterministic_ready(
         self, workspace: Path, *, page_limit: int
     ) -> tuple[bool, list[str]]:
@@ -2401,6 +2589,107 @@ class ACWorkflow(Agent):
         path.write_text(final_tex, encoding="utf-8")
         return path
 
+    def _stash_lamport_proof(self, problem_id: str, tex_body: str) -> Path:
+        solutions_dir = self.ctx.root_workdir / "solutions"
+        solutions_dir.mkdir(parents=True, exist_ok=True)
+        path = solutions_dir / f"{_safe_id(problem_id)}-lamport.tex"
+        path.write_text(tex_body, encoding="utf-8")
+        return path
+
+    async def _run_lamport_rewrite(
+        self,
+        *,
+        inp,
+        workspace: Path,
+        accepted_tex: str,
+        accepted: bool,
+    ) -> tuple[Path | None, bool, bool, int, str]:
+        if not accepted:
+            return None, False, False, 0, ""
+        source_trace_path = workspace / ".ac" / "source_trace.json"
+        source_trace_report_path = workspace / ".ac" / "source_trace_report.md"
+        try:
+            out = await self.lamport_rewriter(
+                problem=inp.problem,
+                page_limit=inp.page_limit,
+                answer_tex=accepted_tex,
+                references_bib=_safe_read(workspace / "references.bib"),
+                source_trace_json=_safe_read(source_trace_path),
+                source_trace_report=_safe_read(source_trace_report_path),
+            )
+        except BudgetExhausted as e:
+            if e.scope == "run":
+                raise
+            out = ACLamportRewriter.Outputs(
+                lamport_ready=False,
+                parse_failed=True,
+                report_md=f"Lamport rewrite skipped: budget exhausted in scope {e.scope}.",
+            )
+        except Exception as e:
+            out = ACLamportRewriter.Outputs(
+                lamport_ready=False,
+                parse_failed=True,
+                report_md=f"Lamport rewrite failed with {type(e).__name__}: {e}",
+            )
+        lamport_path: Path | None = None
+        lamport_compiled = False
+        lamport_pages = 0
+        lamport_tex = out.lamport_tex
+        if lamport_tex:
+            compiled = None
+            try:
+                compiled = await asyncio.to_thread(
+                    _simple_compile_latex,
+                    lamport_tex,
+                    bib_path=None,
+                    page_limit=999,
+                    is_full_document=True,
+                )
+                lamport_tex = compiled.tex
+                lamport_compiled = compiled.compiled
+                lamport_pages = compiled.pages
+                lamport_path = self._stash_lamport_proof(inp.problem_id, lamport_tex)
+                workspace_lamport = workspace / "lamport_proof.tex"
+                workspace_lamport.write_text(lamport_tex, encoding="utf-8")
+                update: dict[str, Any] = {"lamport_tex": lamport_tex}
+                if not lamport_compiled:
+                    update["lamport_ready"] = False
+                    update["report_md"] = (
+                        (out.report_md + "\n\n") if out.report_md else ""
+                    ) + "Lamport compile did not produce a PDF."
+                out = out.model_copy(update=update)
+            except Exception as e:
+                out = out.model_copy(
+                    update={
+                        "lamport_ready": False,
+                        "parse_failed": True,
+                        "report_md": (
+                            (out.report_md + "\n\n") if out.report_md else ""
+                        )
+                        + f"Lamport compile failed with {type(e).__name__}: {e}",
+                    }
+                )
+            finally:
+                if compiled is not None and compiled.bbl_path is not None:
+                    try:
+                        compiled.bbl_path.unlink()
+                    except OSError:
+                        pass
+        write_lamport_artifacts(
+            workspace,
+            out,
+            tex_path=lamport_path,
+            compiled=lamport_compiled,
+            pages=lamport_pages,
+        )
+        return (
+            lamport_path,
+            bool(out.lamport_ready),
+            lamport_compiled,
+            lamport_pages,
+            out.report_md,
+        )
+
 
 # --- helpers ----------------------------------------------------------------
 
@@ -2447,6 +2736,23 @@ def _read_json_if_exists(path: Path) -> Any | None:
         return None
 
 
+def _source_gate_statuses(workspace: Path) -> dict[str, bool]:
+    source_backer = _read_json_if_exists(workspace / ".ac" / "source_backer.json")
+    source_trace = _read_json_if_exists(workspace / ".ac" / "source_trace.json")
+    return {
+        "source_backed": bool(
+            source_backer.get("source_backed")
+            if isinstance(source_backer, dict)
+            else False
+        ),
+        "source_ready": bool(
+            source_trace.get("source_ready")
+            if isinstance(source_trace, dict)
+            else False
+        ),
+    }
+
+
 def _critic_turn_from_messages(messages: Any) -> int:
     if not isinstance(messages, list):
         return 0
@@ -2480,6 +2786,18 @@ def _state_int(state: dict[str, Any] | None, key: str, default: int) -> int:
 
 def _review_resume_record(review: ACCritic.Outputs) -> dict[str, Any]:
     return review.model_dump(mode="json", exclude={"messages_after"})
+
+
+def _append_source_trace_feedback(
+    existing: str, out: ACSourceTrace.Outputs
+) -> str:
+    feedback = (
+        "## Source Trace Gate\n\n"
+        + (out.report_md or "(no report)")
+        + "\n\n### Required fixes\n\n"
+        + (out.missing_obligations or "Add inline exact source locators or internal proofs.")
+    )
+    return "\n\n".join(part for part in (str(existing or "").strip(), feedback) if part)
 
 
 def _sum_logged_model_cost(events_path: Path) -> float:
@@ -2555,6 +2873,10 @@ class ACDAGWorkflow(DAGWorkflow):
             rounds_completed=max(int(ac_state.get("last_round_run", 0) or 0), 0),
             early_stopped=False,
             last_critic_accepted=None,
+            pre_accepted=False,
+            source_backed=False,
+            source_ready=False,
+            accepted=False,
             final_critic_answer_ready=False,
             final_critic_mode_run="not_run",
             final_critic_review_md="",

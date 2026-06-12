@@ -114,6 +114,16 @@ close it (a specific computation, an alternative approach, a missing
 reference, etc.). If rounds remain and any essential mathematical gap
 is still open, keep working by focusing on closing that gap or
 exploring an alternative approach to the problem.
+
+Source handling. Your ``<ready>true</ready>`` flag means the proof is
+mathematically complete and ready for independent mathematical review.
+It is a pre-acceptance signal, not final acceptance. Do not spend proof
+search turns polishing source locators unless they are already known
+cheaply. After Author and Critic pre-accept the proof, a separate
+source-backing stage will add inline exact locators and the source-trace
+gate will decide final acceptance. Never add a final "Source trace",
+"Justification map", "Source comparison", or "open checks" section to
+compensate for missing inline support.
 """
 
 
@@ -251,7 +261,7 @@ You may additionally emit three control blocks:
     workspace.
 
   - **<ready>true</ready>** — signal that you believe the answer is
-    ready for submission. See the readiness rules below.
+    mathematically pre-accepted. See the readiness rules below.
 
 Anything outside the file blocks and control blocks is kept as a
 free-text "thinking summary" for the human reviewer and the Critic.
@@ -268,7 +278,8 @@ lemmas, and no missing assumptions. Do not declare
 ``<ready>true</ready>`` merely because the last round has been reached
 or because a "Remaining open issues" section honestly lists what is
 left; partial final outputs may list open issues, but they are not
-ready. Even then the run terminates only if the Critic also concurs.
+ready. Even then the run terminates only if the Critic also concurs and
+the later source-backing, source-trace, and compile gates pass.
 """
 
 
@@ -676,7 +687,11 @@ class Author(APICallAgent):
     # sympy, sanity checks) plus web searches per round.
     MAX_TOOL_CALLS: ClassVar[int] = 30
     FILE_IO_MODE: ClassVar[str] = "container_files"
-    CODEX_WORKSPACE_SANDBOX: ClassVar[str] = "workspace-write"
+    # Codex workspace mode already runs in a ProofCouncil-managed workspace.
+    # Nested Codex bubblewrap can fail on developer machines where unprivileged
+    # network namespace setup is unavailable, so use Codex's explicit bypass
+    # mode for the inner CLI invocation by default.
+    CODEX_WORKSPACE_SANDBOX: ClassVar[str] = "docker-bypass"
     # Container-files mode (v1): upload workspace files as read-only
     # attachments and read modified versions from the container after
     # the call, instead of pasting them into the prompt and parsing

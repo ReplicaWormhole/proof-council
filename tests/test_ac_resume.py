@@ -23,6 +23,9 @@ from proofstack.agents.ac.visual_blocks import ACInitBlock, ACReturnBlock  # noq
 from proofstack.agents.ac.author import Author  # noqa: E402
 from proofstack.agents.ac.council import CouncilReply  # noqa: E402
 from proofstack.agents.ac.critic import ACCritic  # noqa: E402
+from proofstack.agents.ac.lamport import ACLamportRewriter  # noqa: E402
+from proofstack.agents.ac.source_backer import ACSourceBacker  # noqa: E402
+from proofstack.agents.ac.source_trace import ACSourceTrace  # noqa: E402
 from proofstack.context import RunContext  # noqa: E402
 from proofstack.registry import load_preset  # noqa: E402
 from scripts import run_workflow  # noqa: E402
@@ -55,7 +58,7 @@ class ACResumeTests(unittest.TestCase):
             async def fake_author_run(self, inp):
                 calls.append(("author", inp.round))
                 return self.Outputs(
-                    answer_tex=r"\documentclass{article}\begin{document}answer\end{document}",
+                    answer_tex=r"\documentclass{article}\begin{document}By Theorem 1.1, answer.\end{document}",
                     research_notes_tex="notes",
                     references_bib="",
                     ready=inp.round >= 1,
@@ -77,6 +80,38 @@ class ACResumeTests(unittest.TestCase):
             async def deterministic_ready(self, workspace, *, page_limit):
                 return True, []
 
+            async def fake_source_backer_run(self, inp):
+                calls.append(("source_backer", inp.round))
+                return self.Outputs(
+                    answer_tex=inp.answer_tex,
+                    references_bib=inp.references_bib,
+                    source_backed=True,
+                    report_md="backed",
+                    files_changed=["answer.tex"],
+                )
+
+            async def fake_source_trace_run(self, inp):
+                calls.append(("source_trace", inp.round))
+                return self.Outputs(
+                    source_ready=True,
+                    trace={"steps": [{"step_id": "S1", "status": "proved"}]},
+                    report_md="source ok",
+                )
+
+            async def fake_lamport_run(self, inp):
+                calls.append(("lamport",))
+                return self.Outputs(
+                    lamport_tex=(
+                        "\\documentclass{article}\\begin{document}"
+                        "1. Claim: answer\\\\ Depends on: none\\\\ "
+                        "Justification: internal. Status: validated"
+                        "\\end{document}"
+                    ),
+                    lamport_ready=True,
+                    report_md="lamport ok",
+                    files_changed=["lamport_proof.tex"],
+                )
+
             def fake_compile(tex, *, bib_path=None, page_limit=12, is_full_document=True):
                 return _CompileResult(
                     tex=tex,
@@ -88,6 +123,12 @@ class ACResumeTests(unittest.TestCase):
 
             with patch.object(Author, "run", fake_author_run), patch.object(
                 ACCritic, "run", fake_critic_run
+            ), patch.object(
+                ACSourceBacker, "run", fake_source_backer_run
+            ), patch.object(
+                ACSourceTrace, "run", fake_source_trace_run
+            ), patch.object(
+                ACLamportRewriter, "run", fake_lamport_run
             ), patch.object(
                 ACWorkflow, "_deterministic_ready", deterministic_ready
             ), patch(
@@ -116,11 +157,21 @@ class ACResumeTests(unittest.TestCase):
                     ("author", 1),
                     ("critic", 1, "stateful", False),
                     ("critic", 1, "fresh", True),
+                    ("source_backer", 1),
+                    ("source_trace", 1),
+                    ("lamport",),
                 ],
             )
             self.assertTrue(out.early_stopped)
             self.assertEqual(out.rounds_completed, 1)
             self.assertTrue(out.last_critic_accepted)
+            self.assertTrue(out.pre_accepted)
+            self.assertTrue(out.source_backed)
+            self.assertTrue(out.source_ready)
+            self.assertTrue(out.accepted)
+            self.assertTrue(out.lamport_ready)
+            self.assertTrue(out.lamport_compiled)
+            self.assertTrue(out.lamport_tex and out.lamport_tex.exists())
             self.assertEqual(out.final_critic_mode_run, "not_run")
 
     def test_visual_init_noops_finalized_early_stop_resume(self) -> None:
@@ -214,7 +265,7 @@ class ACResumeTests(unittest.TestCase):
             ), patch(
                 "proofstack.agents.ac.ac_workflow._simple_compile_latex",
                 return_value=_CompileResult(
-                    tex="answer r1",
+                    tex="By Theorem 1.1, answer r1",
                     tex_path=None,
                     pdf_path=None,
                     compiled=True,
@@ -282,7 +333,7 @@ class ACResumeTests(unittest.TestCase):
             ), patch(
                 "proofstack.agents.ac.ac_workflow._simple_compile_latex",
                 return_value=_CompileResult(
-                    tex="answer r1",
+                    tex="By Theorem 1.1, answer r1",
                     tex_path=None,
                     pdf_path=None,
                     compiled=True,
@@ -363,7 +414,7 @@ class ACResumeTests(unittest.TestCase):
             ), patch(
                 "proofstack.agents.ac.ac_workflow._simple_compile_latex",
                 return_value=_CompileResult(
-                    tex="answer r1",
+                    tex="By Theorem 1.1, answer r1",
                     tex_path=None,
                     pdf_path=None,
                     compiled=True,
@@ -760,7 +811,7 @@ class ACResumeTests(unittest.TestCase):
 
             async def fake_author_run(self, inp):
                 return self.Outputs(
-                    answer_tex=f"answer r{inp.round}",
+                    answer_tex=f"By Theorem 1.1, answer r{inp.round}",
                     research_notes_tex="notes",
                     references_bib="",
                     ready=inp.round == 1,
@@ -781,8 +832,46 @@ class ACResumeTests(unittest.TestCase):
             async def deterministic_ready(self, workspace, *, page_limit):
                 return True, []
 
+            async def fake_source_backer_run(self, inp):
+                return self.Outputs(
+                    answer_tex=inp.answer_tex,
+                    references_bib=inp.references_bib,
+                    source_backed=True,
+                    report_md="backed",
+                    files_changed=["answer.tex"],
+                )
+
+            async def fake_source_trace_run(self, inp):
+                return self.Outputs(
+                    source_ready=True,
+                    trace={"steps": [{"step_id": "S1", "status": "proved"}]},
+                    report_md="source ok",
+                )
+
+            async def fake_lamport_run(self, inp):
+                return self.Outputs(
+                    lamport_tex=(
+                        "\\documentclass{article}\\begin{document}"
+                        "1. Claim: answer. Depends on: none. "
+                        "Justification: internal. Status: validated."
+                        "\\end{document}"
+                    ),
+                    lamport_ready=True,
+                    report_md="lamport ok",
+                    files_changed=["lamport_proof.tex"],
+                )
+
             workflow.author.run = types.MethodType(fake_author_run, workflow.author)
             workflow.critic.run = types.MethodType(fake_critic_run, workflow.critic)
+            workflow.source_backer.run = types.MethodType(
+                fake_source_backer_run, workflow.source_backer
+            )
+            workflow.source_trace.run = types.MethodType(
+                fake_source_trace_run, workflow.source_trace
+            )
+            workflow.lamport_rewriter.run = types.MethodType(
+                fake_lamport_run, workflow.lamport_rewriter
+            )
             workflow._deterministic_ready = types.MethodType(
                 deterministic_ready, workflow
             )
@@ -793,7 +882,7 @@ class ACResumeTests(unittest.TestCase):
             ), patch(
                 "proofstack.agents.ac.ac_workflow._simple_compile_latex",
                 return_value=_CompileResult(
-                    tex="answer r1",
+                    tex="By Theorem 1.1, answer r1",
                     tex_path=None,
                     pdf_path=None,
                     compiled=True,
